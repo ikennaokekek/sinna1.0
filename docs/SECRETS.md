@@ -35,8 +35,8 @@ PROVIDER_CAPTIONS_VOD=whisper          # batch fallback
 
 ### CHECKPOINT 5 - Stripe Payment Processing
 ```bash
-STRIPE_SECRET_KEY=sk_live_[REDACTED]
-STRIPE_WEBHOOK_SECRET=whsec_NICA0vE1A2GuAoo7o7YRhq04rEeEK66N
+STRIPE_SECRET_KEY=your_stripe_secret_key_here
+STRIPE_WEBHOOK_SECRET=your_stripe_webhook_secret_here
 ```
 
 ### CHECKPOINT 6 - Monitoring & Analytics
