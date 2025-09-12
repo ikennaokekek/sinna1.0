@@ -1,0 +1,174 @@
+services:
+  # Main API Service
+  - type: web
+    name: sinna-api
+    runtime: node
+    plan: standard
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    
+    # Environment Variables
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: BASE_URL
+        fromService:
+          type: web
+          name: sinna-api
+          property: host
+      
+      # Database & Cache (from secrets)
+      - key: REDIS_URL
+        sync: false
+      
+      # Cloudflare R2 Storage (from secrets)
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false  
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      
+      # Media Processing (from secrets)
+      - key: CLOUDINARY_URL
+        sync: false
+      
+      # AI Services (from secrets)
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PROVIDER_CAPTIONS
+        value: assemblyai_realtime
+      - key: PROVIDER_TTS
+        value: openai
+      - key: PROVIDER_CAPTIONS_VOD
+        value: whisper
+      
+      # Payment Processing (from secrets)
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      
+      # Monitoring (from secrets)
+      - key: SENTRY_DSN
+        sync: false
+      
+      # Security
+      - key: JWT_SECRET
+        generateValue: true
+      - key: API_RATE_LIMIT
+        value: 1000
+      
+      # Feature Flags
+      - key: FEATURE_REALTIME
+        value: 0
+      - key: GPU_PROVIDER
+        value: none
+
+    # Scaling Configuration
+    scaling:
+      minInstances: 1
+      maxInstances: 10
+      targetMemoryPercent: 70
+      targetCPUPercent: 70
+
+    # Health Check Configuration
+    healthCheck:
+      path: /health
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      successThreshold: 1
+      failureThreshold: 3
+
+  # Background Worker Service
+  - type: worker
+    name: sinna-worker
+    runtime: node
+    plan: standard
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:worker
+    autoDeploy: true
+    
+    # Same environment variables as API
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BASE_URL
+        fromService:
+          type: web
+          name: sinna-api
+          property: host
+      
+      # Database & Cache (from secrets)
+      - key: REDIS_URL
+        sync: false
+      
+      # Cloudflare R2 Storage (from secrets)
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false  
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      
+      # Media Processing (from secrets)
+      - key: CLOUDINARY_URL
+        sync: false
+      
+      # AI Services (from secrets)
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PROVIDER_CAPTIONS
+        value: assemblyai_realtime
+      - key: PROVIDER_TTS
+        value: openai
+      - key: PROVIDER_CAPTIONS_VOD
+        value: whisper
+      
+      # Payment Processing (from secrets)
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      
+      # Monitoring (from secrets)
+      - key: SENTRY_DSN
+        sync: false
+      
+      # Security
+      - key: JWT_SECRET
+        generateValue: true
+      
+      # Feature Flags
+      - key: FEATURE_REALTIME
+        value: 0
+      - key: GPU_PROVIDER
+        value: none
+
+    # Worker Scaling Configuration
+    scaling:
+      minInstances: 1
+      maxInstances: 5
+      targetMemoryPercent: 80
+      targetCPUPercent: 80
+
+# Databases (if needed in future)
+databases: []
+
+# Static Sites (for documentation, if needed)
+staticSites: []
