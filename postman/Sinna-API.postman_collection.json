@@ -1,0 +1,551 @@
+{
+  "info": {
+    "name": "Sinna API - Accessibility Features",
+    "description": "Advanced accessibility features API for streaming platforms worldwide. Provides subtitle generation, audio descriptions, color analysis, and comprehensive billing management.",
+    "version": "1.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "x-api-key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{API_KEY}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "https://your-app.onrender.com",
+      "type": "string"
+    },
+    {
+      "key": "API_KEY",
+      "value": "sk_test_your_api_key_here",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Monitoring",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/health",
+              "host": ["{{BASE_URL}}"],
+              "path": ["health"]
+            },
+            "description": "Comprehensive system health check including all services"
+          },
+          "response": []
+        },
+        {
+          "name": "Ping",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/ping",
+              "host": ["{{BASE_URL}}"],
+              "path": ["ping"]
+            },
+            "description": "Simple uptime check"
+          },
+          "response": []
+        },
+        {
+          "name": "Prometheus Metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/metrics",
+              "host": ["{{BASE_URL}}"],
+              "path": ["metrics"]
+            },
+            "description": "Prometheus metrics for monitoring and analytics"
+          },
+          "response": []
+        },
+        {
+          "name": "System Information",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/monitoring/system",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "monitoring", "system"]
+            },
+            "description": "Detailed system information and runtime stats"
+          },
+          "response": []
+        }
+      ],
+      "description": "Health checks and system monitoring endpoints"
+    },
+    {
+      "name": "Audio Services",
+      "item": [
+        {
+          "name": "Transcribe Audio",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"audioUrl\": \"https://example.com/audio.mp3\",\n  \"language\": \"en\",\n  \"includeWordTimestamps\": true,\n  \"provider\": \"auto\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/audio/transcribe",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "audio", "transcribe"]
+            },
+            "description": "Transcribe audio to text using AssemblyAI or OpenAI"
+          },
+          "response": []
+        },
+        {
+          "name": "Generate Subtitles",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"audioUrl\": \"https://example.com/audio.mp3\",\n  \"language\": \"en\",\n  \"format\": \"vtt\",\n  \"includeWordTimestamps\": true\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/audio/generate-subtitles",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "audio", "generate-subtitles"]
+            },
+            "description": "Generate subtitle files in VTT, SRT, or ASS format"
+          },
+          "response": []
+        },
+        {
+          "name": "Text to Speech",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello, this is a test of the text-to-speech service.\",\n  \"voice\": \"nova\",\n  \"speed\": 1.0,\n  \"format\": \"mp3\",\n  \"quality\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/audio/text-to-speech",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "audio", "text-to-speech"]
+            },
+            "description": "Generate speech from text using OpenAI or free TTS"
+          },
+          "response": []
+        },
+        {
+          "name": "Generate Audio Description",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"descriptions\": [\n    {\n      \"time\": 10.5,\n      \"text\": \"A woman walks across a busy street\"\n    },\n    {\n      \"time\": 25.0,\n      \"text\": \"The camera pans to show a cityscape\"\n    }\n  ],\n  \"voice\": \"nova\",\n  \"speed\": 0.9,\n  \"quality\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/audio/audio-description",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "audio", "audio-description"]
+            },
+            "description": "Generate audio descriptions for video content"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Available Voices",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/audio/voices",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "audio", "voices"]
+            },
+            "description": "Get list of available TTS voices"
+          },
+          "response": []
+        }
+      ],
+      "description": "Speech-to-text, text-to-speech, and audio description services"
+    },
+    {
+      "name": "Accessibility Analysis",
+      "item": [
+        {
+          "name": "Analyze Video Colors",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"videoUrl\": \"https://example.com/video.mp4\",\n  \"frameCount\": 5,\n  \"startTime\": 10,\n  \"interval\": 30\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/accessibility/color-analysis",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "accessibility", "color-analysis"]
+            },
+            "description": "Analyze video colors for accessibility compliance"
+          },
+          "response": []
+        },
+        {
+          "name": "Accessibility Audit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"videoUrl\": \"https://example.com/video.mp4\",\n  \"checkContrast\": true,\n  \"checkColorBlindness\": true,\n  \"checkMotionSensitivity\": false\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/accessibility/audit",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "accessibility", "audit"]
+            },
+            "description": "Comprehensive accessibility audit of video content"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Accessibility Guidelines",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/accessibility/guidelines",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "accessibility", "guidelines"]
+            },
+            "description": "Get WCAG guidelines and best practices"
+          },
+          "response": []
+        }
+      ],
+      "description": "Color analysis and accessibility compliance checking"
+    },
+    {
+      "name": "Job Management",
+      "item": [
+        {
+          "name": "Create Subtitle Job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"videoUrl\": \"https://example.com/video.mp4\",\n  \"language\": \"en\",\n  \"format\": \"vtt\",\n  \"webhookUrl\": \"https://your-app.com/webhook\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/jobs/subtitles",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "jobs", "subtitles"]
+            },
+            "description": "Queue a subtitle generation job"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Audio Description Job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"videoUrl\": \"https://example.com/video.mp4\",\n  \"language\": \"en\",\n  \"webhookUrl\": \"https://your-app.com/webhook\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/jobs/audio-description",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "jobs", "audio-description"]
+            },
+            "description": "Queue an audio description generation job"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Job Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/jobs/subtitle-generation/{{JOB_ID}}",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "jobs", "subtitle-generation", "{{JOB_ID}}"]
+            },
+            "description": "Get status of a specific job"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Queue Statistics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/jobs/stats",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "jobs", "stats"]
+            },
+            "description": "Get statistics for all job queues"
+          },
+          "response": []
+        }
+      ],
+      "description": "Background job management and monitoring"
+    },
+    {
+      "name": "Storage Management",
+      "item": [
+        {
+          "name": "Generate Upload URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fileName\": \"video-subtitle.vtt\",\n  \"contentType\": \"text/vtt\",\n  \"folder\": \"subtitles\",\n  \"language\": \"en\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/storage/upload-url",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "storage", "upload-url"]
+            },
+            "description": "Generate signed URL for file upload to R2 storage"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Download URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"key\": \"subtitles/tenant123/1234567890-video-subtitle.vtt\",\n  \"expiresIn\": 3600\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/storage/download-url",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "storage", "download-url"]
+            },
+            "description": "Generate signed URL for file download from R2 storage"
+          },
+          "response": []
+        }
+      ],
+      "description": "File storage and signed URL management"
+    },
+    {
+      "name": "Billing & Subscriptions",
+      "item": [
+        {
+          "name": "Get Subscription Plans",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/billing/plans",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "billing", "plans"]
+            },
+            "description": "Get available subscription plans (Standard $1500, Gold $3000)"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"name\": \"John Doe\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/billing/customer",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "billing", "customer"]
+            },
+            "description": "Create a new Stripe customer"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Checkout Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"planId\": \"standard\",\n  \"successUrl\": \"https://your-app.com/success\",\n  \"cancelUrl\": \"https://your-app.com/cancel\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/billing/checkout",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "billing", "checkout"]
+            },
+            "description": "Create Stripe checkout session for subscription"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Subscription Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/billing/subscription",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "billing", "subscription"]
+            },
+            "description": "Get current subscription status and usage"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Customer Portal",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/billing/portal",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "billing", "portal"]
+            },
+            "description": "Create Stripe customer portal session"
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel Subscription",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"immediately\": false\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/billing/cancel",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "billing", "cancel"]
+            },
+            "description": "Cancel subscription (immediately or at period end)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Billing History",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{BASE_URL}}/api/v1/billing/history?limit=10",
+              "host": ["{{BASE_URL}}"],
+              "path": ["api", "v1", "billing", "history"],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Get billing history and invoices"
+          },
+          "response": []
+        }
+      ],
+      "description": "Subscription management and billing operations"
+    }
+  ]
+}

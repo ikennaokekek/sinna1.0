@@ -222,11 +222,11 @@ async function startServer(): Promise<void> {
     }));
 
     // API Routes
-    app.use('/api/v1/storage', createStorageRoutes(storageController));
-    app.use('/api/v1/jobs', createJobsRoutes(jobsController));
-    app.use('/api/v1/accessibility', createAccessibilityRoutes(accessibilityController));
-    app.use('/api/v1/audio', createAudioServicesRoutes(audioServicesController));
-    app.use('/api/v1/billing', createBillingRoutes(billingController));
+    app.use('/v1/storage', createStorageRoutes(storageController));
+    app.use('/v1/jobs', createJobsRoutes(jobsController));
+    app.use('/v1/accessibility', createAccessibilityRoutes(accessibilityController));
+    app.use('/v1/audio', createAudioServicesRoutes(audioServicesController));
+    app.use('/v1/billing', createBillingRoutes(billingController));
 
     // Monitoring routes (includes /health, /ping, /metrics)
     app.use('/', createMonitoringRoutes(monitoringController));

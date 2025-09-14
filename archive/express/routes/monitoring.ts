@@ -13,7 +13,7 @@ export const createMonitoringRoutes = (monitoringController: MonitoringControlle
   router.get('/metrics', monitoringController.getMetrics);
 
   // Protected monitoring endpoints
-  router.use('/api/v1/monitoring', authMiddleware);
+  router.use('/v1/monitoring', authMiddleware);
 
   /**
    * @swagger
@@ -78,7 +78,7 @@ export const createMonitoringRoutes = (monitoringController: MonitoringControlle
    *       500:
    *         description: Server error
    */
-  router.get('/api/v1/monitoring/system', monitoringController.getSystemInfo);
+  router.get('/v1/monitoring/system', monitoringController.getSystemInfo);
 
   /**
    * @swagger
@@ -124,7 +124,7 @@ export const createMonitoringRoutes = (monitoringController: MonitoringControlle
    *       500:
    *         description: Server error
    */
-  router.get('/api/v1/monitoring/stats', monitoringController.getServiceStats);
+  router.get('/v1/monitoring/stats', monitoringController.getServiceStats);
 
   /**
    * @swagger
@@ -178,7 +178,7 @@ export const createMonitoringRoutes = (monitoringController: MonitoringControlle
    *       500:
    *         description: Server error
    */
-  router.post('/api/v1/monitoring/test-error', monitoringController.testError);
+  router.post('/v1/monitoring/test-error', monitoringController.testError);
 
   return router;
 };

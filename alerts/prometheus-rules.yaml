@@ -1,0 +1,31 @@
+groups:
+  - name: sinna-alerts
+    rules:
+      - alert: DLQSpike
+        expr: increase(queue_depth{queue=~".*-dlq"}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: DLQ spike detected
+          description: Jobs accumulating in DLQ.
+
+      - alert: High5xxRate
+        expr: sum(rate(sinna_api_sinna_http_requests_total{status_code=~"5.."}[5m])) / sum(rate(sinna_api_sinna_http_requests_total[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Elevated 5xx error rate
+          description: More than 1% 5xx responses over 5 minutes.
+
+      - alert: P95LatencyAboveSLA
+        expr: histogram_quantile(0.95, sum(rate(job_latency_ms_bucket[5m])) by (le)) > 7200000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: P95 job latency above SLA
+          description: P95 job latency exceeds 2 hours.
+
+

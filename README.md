@@ -90,15 +90,15 @@ npm run test:e2e    # Run E2E tests
 All endpoints require API key authentication:
 ```bash
 curl -H "x-api-key: sk_your_api_key" \
-  https://api.sinna.com/api/v1/endpoint
+  https://api.sinna.com/v1/endpoint
 ```
 
 ### Core Endpoints
-- `POST /api/v1/audio/transcribe` - Transcribe audio to text
-- `POST /api/v1/audio/generate-subtitles` - Generate subtitle files
-- `POST /api/v1/audio/audio-description` - Create audio descriptions
-- `POST /api/v1/accessibility/color-analysis` - Analyze video colors
-- `POST /api/v1/jobs/subtitles` - Queue subtitle generation job
+- `POST /v1/audio/transcribe` - Transcribe audio to text
+- `POST /v1/audio/generate-subtitles` - Generate subtitle files
+- `POST /v1/audio/audio-description` - Create audio descriptions
+- `POST /v1/accessibility/color-analysis` - Analyze video colors
+- `POST /v1/jobs/subtitles` - Queue subtitle generation job
 
 ### Billing & Management
 - `GET /api/v1/billing/plans` - Available subscription plans
