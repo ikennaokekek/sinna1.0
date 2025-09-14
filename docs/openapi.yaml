@@ -1,0 +1,197 @@
+openapi: 3.0.3
+info:
+  title: Sinna1.0 API
+  version: 1.0.0
+  description: External API for streaming services offering advanced accessibility features.
+servers:
+  - url: https://your-app.onrender.com
+    description: Production
+  - url: http://localhost:4000
+    description: Local
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+  schemas:
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "job_12345"
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+          example: queued
+        source_url:
+          type: string
+          format: uri
+          example: "https://example.com/video.mp4"
+        preset_id:
+          type: string
+          nullable: true
+          example: "everyday"
+        result:
+          type: object
+          nullable: true
+          properties:
+            file_id:
+              type: string
+              example: "file_abc123"
+            subtitle_format:
+              type: string
+              example: "vtt"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: "Invalid request"
+        code:
+          type: string
+          example: "VALIDATION_FAILED"
+paths:
+  /v1/jobs:
+    post:
+      summary: Create a processing job
+      description: Create a new job to process media for accessibility outputs.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_url]
+              properties:
+                source_url:
+                  type: string
+                  format: uri
+                  example: "https://example.com/video.mp4"
+                preset_id:
+                  type: string
+                  description: Optional preset to influence processing behaviour
+                  example: "everyday"
+            examples:
+              default:
+                summary: Minimal request
+                value:
+                  source_url: "https://example.com/video.mp4"
+              withPreset:
+                summary: With preset
+                value:
+                  source_url: "https://example.com/video.mp4"
+                  preset_id: "everyday"
+      responses:
+        '201':
+          description: Job created
+          content:
+            application/json:
+              examples:
+                queued:
+                  summary: Job queued
+                  value:
+                    success: true
+                    data:
+                      id: "job_12345"
+                      status: "queued"
+                      source_url: "https://example.com/video.mp4"
+                      preset_id: "everyday"
+                      created_at: "2025-01-01T12:00:00Z"
+                    message: "Job queued"
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+        '429':
+          description: Rate limit exceeded
+  /v1/jobs/{id}:
+    get:
+      summary: Get job status
+      description: Retrieve the status and result of a job.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          example: "job_12345"
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              examples:
+                processing:
+                  value:
+                    success: true
+                    data:
+                      id: "job_12345"
+                      status: "processing"
+                      updated_at: "2025-01-01T12:05:00Z"
+                completed:
+                  value:
+                    success: true
+                    data:
+                      id: "job_12345"
+                      status: "completed"
+                      result:
+                        file_id: "file_abc123"
+                        subtitle_format: "vtt"
+                      updated_at: "2025-01-01T12:30:00Z"
+        '404':
+          description: Job not found
+        '401':
+          description: Unauthorized
+  /v1/files/{id}:sign:
+    get:
+      summary: Generate signed download URL
+      description: Generate a short-lived signed URL to download a processed file.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          example: "file_abc123"
+      responses:
+        '200':
+          description: Signed URL response
+          content:
+            application/json:
+              examples:
+                default:
+                  value:
+                    success: true
+                    data:
+                      url: "https://r2.example.com/bucket/file_abc123?X-Amz-Expires=3600&X-Amz-Signature=..."
+                      expires_in: 3600
+                    message: "Signed URL generated"
+        '404':
+          description: File not found
+        '401':
+          description: Unauthorized
+security:
+  - ApiKeyAuth: []
+
+
