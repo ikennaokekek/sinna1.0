@@ -5,8 +5,8 @@ services:
     runtime: node
     plan: standard
     region: oregon
-    buildCommand: npm ci && npm run build
-    startCommand: npm start
+    buildCommand: pnpm i --frozen-lockfile && pnpm build
+    startCommand: node apps/api/dist/index.js
     healthCheckPath: /health
     autoDeploy: true
     
@@ -96,8 +96,8 @@ services:
     runtime: node
     plan: standard
     region: oregon
-    buildCommand: npm ci && npm run build
-    startCommand: npm run start:worker
+    buildCommand: pnpm i --frozen-lockfile && pnpm build
+    startCommand: node apps/worker/dist/index.js
     autoDeploy: true
     
     # Same environment variables as API
