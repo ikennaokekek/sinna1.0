@@ -11,6 +11,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import swaggerJSDoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
+import fs from 'fs';
+import path from 'path';
 
 // Services and utilities
 import { logger } from './utils/logger';
@@ -54,6 +56,51 @@ import { usageReportingMiddleware } from './middleware/paywall';
 
 async function startServer(): Promise<void> {
   try {
+    // Guard: refuse to boot if env.example contains real-looking secrets
+    try {
+      const envExamplePath = path.join(process.cwd(), 'env.example');
+      if (fs.existsSync(envExamplePath)) {
+        const content = fs.readFileSync(envExamplePath, 'utf-8');
+        const placeholderIndicators = ['<', '>', '__', 'xxx', 'change-me'];
+        const keysToCheck = [
+          'REDIS_URL',
+          'R2_ACCOUNT_ID',
+          'R2_ACCESS_KEY_ID',
+          'R2_SECRET_ACCESS_KEY',
+          'R2_BUCKET',
+          'ASSEMBLYAI_API_KEY',
+          'OPENAI_API_KEY',
+          'STRIPE_SECRET_KEY',
+          'STRIPE_WEBHOOK_SECRET',
+          'SENTRY_DSN',
+          'JWT_SECRET',
+          'DATABASE_URL',
+          'CLOUDINARY_URL'
+        ];
+        const lines = content.split(/\r?\n/);
+        const violations: { key: string; sample: string }[] = [];
+        for (const key of keysToCheck) {
+          const line = lines.find((l) => l.startsWith(`${key}=`));
+          if (!line) continue;
+          const value = line.slice(key.length + 1).trim();
+          if (!value) continue; // empty is fine
+          const hasPlaceholder = placeholderIndicators.some((ind) => value.includes(ind));
+          if (!hasPlaceholder) {
+            violations.push({ key, sample: value.length > 64 ? value.slice(0, 64) + '…' : value });
+          }
+        }
+        if (violations.length > 0) {
+          logger.error('env.example contains non-placeholder values', { violations });
+          throw new Error(
+            'env.example must contain placeholders only. Move real secrets to local .env or Render environment.'
+          );
+        }
+      }
+    } catch (e) {
+      logger.error('Startup guard failed', { error: e });
+      process.exit(1);
+    }
+
     // Run fail-fast health check
     const doctorService = getDoctorService();
     await doctorService.failFastCheck();
