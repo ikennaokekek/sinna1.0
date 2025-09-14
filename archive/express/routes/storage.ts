@@ -12,7 +12,7 @@ export const createStorageRoutes = (storageController: StorageController): Route
 
   /**
    * @swagger
-   * /api/v1/storage/upload-url:
+   * /v1/storage/upload-url:
    *   post:
    *     summary: Generate signed upload URL
    *     tags: [Storage]
@@ -59,7 +59,7 @@ export const createStorageRoutes = (storageController: StorageController): Route
 
   /**
    * @swagger
-   * /api/v1/storage/download-url:
+   * /v1/storage/download-url:
    *   post:
    *     summary: Get signed download URL
    *     tags: [Storage]
@@ -96,7 +96,7 @@ export const createStorageRoutes = (storageController: StorageController): Route
 
   /**
    * @swagger
-   * /api/v1/storage/{key}:
+   * /v1/storage/{key}:
    *   delete:
    *     summary: Delete file
    *     tags: [Storage]

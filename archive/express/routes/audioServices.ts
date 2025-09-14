@@ -12,7 +12,7 @@ export const createAudioServicesRoutes = (audioServicesController: AudioServices
 
   /**
    * @swagger
-   * /api/v1/audio/transcribe:
+   * /v1/audio/transcribe:
    *   post:
    *     summary: Transcribe audio to text
    *     tags: [Audio Services]
@@ -67,7 +67,7 @@ export const createAudioServicesRoutes = (audioServicesController: AudioServices
 
   /**
    * @swagger
-   * /api/v1/audio/generate-subtitles:
+   * /v1/audio/generate-subtitles:
    *   post:
    *     summary: Generate subtitles from audio
    *     tags: [Audio Services]
@@ -117,7 +117,7 @@ export const createAudioServicesRoutes = (audioServicesController: AudioServices
 
   /**
    * @swagger
-   * /api/v1/audio/text-to-speech:
+   * /v1/audio/text-to-speech:
    *   post:
    *     summary: Generate speech from text
    *     tags: [Audio Services]
@@ -172,7 +172,7 @@ export const createAudioServicesRoutes = (audioServicesController: AudioServices
 
   /**
    * @swagger
-   * /api/v1/audio/audio-description:
+   * /v1/audio/audio-description:
    *   post:
    *     summary: Generate audio descriptions for video
    *     tags: [Audio Services]
@@ -240,7 +240,7 @@ export const createAudioServicesRoutes = (audioServicesController: AudioServices
 
   /**
    * @swagger
-   * /api/v1/audio/voices:
+   * /v1/audio/voices:
    *   get:
    *     summary: Get available voices for TTS
    *     tags: [Audio Services]
@@ -280,7 +280,7 @@ export const createAudioServicesRoutes = (audioServicesController: AudioServices
 
   /**
    * @swagger
-   * /api/v1/audio/health:
+   * /v1/audio/health:
    *   get:
    *     summary: Health check for audio services
    *     tags: [Audio Services]
@@ -326,7 +326,7 @@ export const createAudioServicesRoutes = (audioServicesController: AudioServices
 
   /**
    * @swagger
-   * /api/v1/audio/generate-ssml:
+   * /v1/audio/generate-ssml:
    *   post:
    *     summary: Generate SSML for advanced speech control
    *     tags: [Audio Services]
