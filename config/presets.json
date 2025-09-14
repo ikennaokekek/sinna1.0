@@ -1,0 +1,92 @@
+{
+  "everyday": {
+    "captionStyle": "default",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "standard",
+    "motionReduce": false,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"]
+  },
+  "adhd": {
+    "captionStyle": "chunked",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "high-contrast",
+    "motionReduce": true,
+    "strobeReduce": true,
+    "speed": 1.1,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"]
+  },
+  "autism": {
+    "captionStyle": "clear",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "calm",
+    "motionReduce": true,
+    "strobeReduce": true,
+    "speed": 0.9,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"]
+  },
+  "low_vision": {
+    "captionStyle": "large-high-contrast",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "high-contrast",
+    "motionReduce": false,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"]
+  },
+  "color": {
+    "captionStyle": "default",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "colorblind-safe",
+    "motionReduce": false,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"]
+  },
+  "hoh": {
+    "captionStyle": "descriptive",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "standard",
+    "motionReduce": false,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"]
+  },
+  "cognitive": {
+    "captionStyle": "simplified",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "standard",
+    "motionReduce": true,
+    "strobeReduce": true,
+    "speed": 0.95,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"]
+  },
+  "motion": {
+    "captionStyle": "default",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "reduced-motion",
+    "motionReduce": true,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"]
+  }
+}
+
+

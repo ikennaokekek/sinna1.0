@@ -15,7 +15,7 @@ export const createBillingRoutes = (billingController: BillingController): Route
 
   /**
    * @swagger
-   * /api/v1/billing/plans:
+   * /v1/billing/plans:
    *   get:
    *     summary: Get available subscription plans
    *     tags: [Billing]
@@ -62,7 +62,7 @@ export const createBillingRoutes = (billingController: BillingController): Route
 
   /**
    * @swagger
-   * /api/v1/billing/customer:
+   * /v1/billing/customer:
    *   post:
    *     summary: Create Stripe customer
    *     tags: [Billing]
@@ -102,7 +102,7 @@ export const createBillingRoutes = (billingController: BillingController): Route
 
   /**
    * @swagger
-   * /api/v1/billing/checkout:
+   * /v1/billing/checkout:
    *   post:
    *     summary: Create checkout session for subscription
    *     tags: [Billing]
@@ -143,7 +143,7 @@ export const createBillingRoutes = (billingController: BillingController): Route
 
   /**
    * @swagger
-   * /api/v1/billing/portal:
+   * /v1/billing/portal:
    *   post:
    *     summary: Create customer portal session
    *     tags: [Billing]
@@ -176,7 +176,7 @@ export const createBillingRoutes = (billingController: BillingController): Route
 
   /**
    * @swagger
-   * /api/v1/billing/subscription:
+   * /v1/billing/subscription:
    *   get:
    *     summary: Get current subscription and usage
    *     tags: [Billing]
@@ -227,7 +227,7 @@ export const createBillingRoutes = (billingController: BillingController): Route
 
   /**
    * @swagger
-   * /api/v1/billing/cancel:
+   * /v1/billing/cancel:
    *   post:
    *     summary: Cancel subscription
    *     tags: [Billing]
@@ -257,7 +257,7 @@ export const createBillingRoutes = (billingController: BillingController): Route
 
   /**
    * @swagger
-   * /api/v1/billing/history:
+   * /v1/billing/history:
    *   get:
    *     summary: Get billing history
    *     tags: [Billing]
