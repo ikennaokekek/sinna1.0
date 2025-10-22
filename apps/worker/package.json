@@ -11,11 +11,12 @@
   },
   "dependencies": {
     "bullmq": "^4.15.0",
-    "ioredis": "^5.3.2"
+    "ioredis": "^5.3.2",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
-    "typescript": "^5.2.2",
-    "@types/node": "^20.8.6"
+    "@types/node": "^20.8.6",
+    "@types/pg": "^8.15.5",
+    "typescript": "^5.2.2"
   }
 }
-
