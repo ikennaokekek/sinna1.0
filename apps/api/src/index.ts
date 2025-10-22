@@ -178,17 +178,20 @@ app.get('/v1/demo', async () => ({
   }
 }));
 // Rate limit (rate-limiter-flexible): single global limiter with bypass + headers
-const redis = new IORedis(process.env.REDIS_URL!);
+const redisUrl = process.env.REDIS_URL;
+const redis = redisUrl ? new IORedis(redisUrl) : null;
 const pointsPerMinute = 120;
-const limiter = new RateLimiterRedis({
-  storeClient: redis as any,
-  points: pointsPerMinute,
-  duration: 60,
-  keyPrefix: 'rlf:global',
-  execEvenly: true,
-  blockDuration: 0,
-  insuranceLimiter: new RateLimiterMemory({ points: pointsPerMinute, duration: 60 }),
-});
+const limiter = redis
+  ? new RateLimiterRedis({
+      storeClient: redis as any,
+      points: pointsPerMinute,
+      duration: 60,
+      keyPrefix: 'rlf:global',
+      execEvenly: true,
+      blockDuration: 0,
+      insuranceLimiter: new RateLimiterMemory({ points: pointsPerMinute, duration: 60 }),
+    })
+  : new RateLimiterMemory({ points: pointsPerMinute, duration: 60 });
 
 const trustedCidrs = (process.env.TRUSTED_CIDRS || '')
   .split(',')
