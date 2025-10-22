@@ -19,7 +19,7 @@ import { RateLimiterRedis, RateLimiterMemory } from 'rate-limiter-flexible';
 import { getDb, runMigrations } from './lib/db';
 import { hashKey } from './lib/auth';
 import { incrementAndGateUsage } from './lib/usage';
-import { isProduction, getStripeSecretKeyLive, getStripeWebhookSecretLive } from './config/env';
+import { isProduction } from './config/env';
 
 const app = Fastify({
   logger: true,
@@ -459,17 +459,20 @@ app.get('/v1/me/usage', async (req, res) => {
   res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
 });
 
-// Raw-body Stripe webhook route
-const stripeKey = isProduction() ? getStripeSecretKeyLive() : (process.env.STRIPE_SECRET_KEY || '');
-const stripe = new Stripe(stripeKey, { apiVersion: '2023-10-16' });
+// Raw-body Stripe webhook route (tolerate missing keys to avoid boot failure)
+const stripeKey = process.env.STRIPE_SECRET_KEY_LIVE || process.env.STRIPE_SECRET_KEY || '';
+const stripe = stripeKey ? new Stripe(stripeKey, { apiVersion: '2023-10-16' }) : null;
 
 app.post('/webhooks/stripe', { config: { rawBody: true } }, async (req, res) => {
   const sig = req.headers['stripe-signature'] as string;
-  const webhookSecret = isProduction() ? getStripeWebhookSecretLive() : (process.env.STRIPE_WEBHOOK_SECRET || '');
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET_LIVE || process.env.STRIPE_WEBHOOK_SECRET || '';
+  if (!stripe || !webhookSecret) {
+    return res.code(503).send({ success: false, error: 'stripe_unconfigured' });
+  }
   const rawBody = (req as any).rawBody;
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+    event = (stripe as Stripe).webhooks.constructEvent(rawBody, sig, webhookSecret);
   } catch (err) {
     req.log.error({ err }, 'Stripe signature verification failed');
     return res.code(400).send({ success: false, error: 'Invalid signature' });
