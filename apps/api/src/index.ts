@@ -179,19 +179,9 @@ app.get('/v1/demo', async () => ({
 }));
 // Rate limit (rate-limiter-flexible): single global limiter with bypass + headers
 const redisUrl = process.env.REDIS_URL;
-const redis = redisUrl ? new IORedis(redisUrl) : null;
+let redis: IORedis | null = null;
 const pointsPerMinute = 120;
-const limiter = redis
-  ? new RateLimiterRedis({
-      storeClient: redis as any,
-      points: pointsPerMinute,
-      duration: 60,
-      keyPrefix: 'rlf:global',
-      execEvenly: true,
-      blockDuration: 0,
-      insuranceLimiter: new RateLimiterMemory({ points: pointsPerMinute, duration: 60 }),
-    })
-  : new RateLimiterMemory({ points: pointsPerMinute, duration: 60 });
+let limiter: RateLimiterRedis | RateLimiterMemory = new RateLimiterMemory({ points: pointsPerMinute, duration: 60 });
 
 const trustedCidrs = (process.env.TRUSTED_CIDRS || '')
   .split(',')
@@ -538,6 +528,34 @@ async function start() {
     if (process.env.RUN_MIGRATIONS_ON_BOOT === '1') {
       await runMigrations();
       app.log.info('DB migrations completed');
+    }
+    // Initialize Redis if configured; fallback to memory limiter on failure
+    if (redisUrl) {
+      const client = new IORedis(redisUrl, {
+        lazyConnect: true,
+        maxRetriesPerRequest: 0,
+        enableReadyCheck: false,
+        retryStrategy: () => null,
+        connectTimeout: 1000,
+      } as any);
+      try {
+        await client.connect();
+        redis = client as any;
+        limiter = new RateLimiterRedis({
+          storeClient: redis as any,
+          points: pointsPerMinute,
+          duration: 60,
+          keyPrefix: 'rlf:global',
+          execEvenly: true,
+          blockDuration: 0,
+          insuranceLimiter: new RateLimiterMemory({ points: pointsPerMinute, duration: 60 }),
+        });
+        app.log.info('Redis connected; using distributed rate limiter');
+      } catch (e) {
+        app.log.warn({ err: e }, 'Redis unavailable; using in-memory rate limiter');
+        try { client.disconnect(); } catch {}
+        redis = null;
+      }
     }
     // Sanity check: print environment
     // eslint-disable-next-line no-console
