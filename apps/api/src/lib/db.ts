@@ -12,7 +12,8 @@ export function getDb(): DatabaseClients {
   if (!connectionString) {
     throw new Error('DATABASE_URL is required');
   }
-  const pool = new Pool({ connectionString, max: 10, idleTimeoutMillis: 30_000 });
+  const ssl = process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined as any;
+  const pool = new Pool({ connectionString, ssl, max: 10, idleTimeoutMillis: 30_000 });
   cached = { pool };
   return cached;
 }
