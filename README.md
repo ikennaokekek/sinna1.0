@@ -51,6 +51,8 @@ npm run test:e2e    # Run E2E tests
 
 ## 🏗️ Architecture
 
+Note: The `archive/express` directory contains a deprecated Express implementation kept for reference. The live production stack uses Fastify in `apps/api` and BullMQ worker in `apps/worker`.
+
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │   Client    │───▶│  Sinna API  │───▶│   Worker    │
@@ -101,10 +103,10 @@ curl -H "x-api-key: sk_your_api_key" \
 - `POST /v1/jobs/subtitles` - Queue subtitle generation job
 
 ### Billing & Management
-- `GET /api/v1/billing/plans` - Available subscription plans
-- `POST /api/v1/billing/checkout` - Create checkout session
-- `GET /api/v1/billing/subscription` - Current subscription status
-- `POST /api/v1/billing/portal` - Customer portal access
+- `GET /v1/billing/plans` - Available subscription plans
+- `POST /v1/billing/checkout` - Create checkout session
+- `GET /v1/billing/subscription` - Current subscription status
+- `POST /v1/billing/portal` - Customer portal access
 
 ### Monitoring
 - `GET /health` - System health check
@@ -204,10 +206,10 @@ npm run start:worker   # Background worker
 npm test
 
 # E2E tests (requires running server)
-E2E_BASE_URL=http://localhost:3002 npm run test:e2e
+E2E_BASE_URL=http://localhost:4000 npm run test:e2e
 
 # Health check
-curl http://localhost:3002/health
+curl http://localhost:4000/health
 ```
 
 ## 🤝 Support

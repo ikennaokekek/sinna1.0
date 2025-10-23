@@ -1,4 +1,12 @@
 import 'dotenv/config';
+import { validateEnv } from '@sinna/types';
+try {
+  validateEnv(process.env);
+} catch (e: any) {
+  // eslint-disable-next-line no-console
+  console.error('Invalid environment configuration (worker):', e?.message || e);
+  process.exit(1);
+}
 import { Queue, Worker, QueueEvents } from 'bullmq';
 import IORedis from 'ioredis';
 import { Pool } from 'pg';
