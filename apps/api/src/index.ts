@@ -184,6 +184,30 @@ app.addHook('onSend', async (req, reply, payload) => {
 });
 
 app.get('/v1/demo', async () => ({ ok: true, now: new Date().toISOString() }));
+// Billing: create subscription Checkout Session for Standard plan
+app.post('/v1/billing/subscribe', async (req, reply) => {
+  const tenantId = (req as any).tenantId as string | undefined;
+  if (!tenantId) return reply.code(401).send({ code: 'unauthorized' });
+  if (!stripe) return reply.code(503).send({ code: 'stripe_unconfigured' });
+  const priceId = process.env.STRIPE_STANDARD_PRICE_ID || '';
+  if (!priceId) return reply.code(503).send({ code: 'missing_price' });
+  try {
+    const session = await (stripe as Stripe).checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: (process.env.BASE_URL || 'https://sinna1-0.onrender.com') + '/billing/success',
+      cancel_url: (process.env.BASE_URL || 'https://sinna1-0.onrender.com') + '/billing/cancel',
+      client_reference_id: tenantId,
+      subscription_data: {
+        metadata: { tenantId },
+      },
+    });
+    return reply.send({ success: true, url: session.url });
+  } catch (e) {
+    req.log.error({ err: e }, 'Failed to create Stripe Checkout Session');
+    return reply.code(500).send({ success: false, error: 'stripe_error' });
+  }
+});
 // Rate limit (rate-limiter-flexible): single global limiter with bypass + headers
 const redisUrl = process.env.REDIS_URL;
 let redis: IORedis | null = null;
@@ -487,6 +511,17 @@ app.post('/webhooks/stripe', { config: { rawBody: true } }, async (req, res) => 
     state.graceUntil = undefined;
     state.usage.requests = 0; state.usage.minutes = 0; state.usage.jobs = 0; state.usage.storage = 0;
     tenants.set(tenantId, state);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object as Stripe.Checkout.Session;
+    const tenantId = (session.client_reference_id || session.subscription as string || '') as string;
+    if (tenantId) {
+      const state = tenants.get(tenantId) || { active: false, usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 } } as TenantState;
+      state.active = true;
+      state.graceUntil = undefined;
+      tenants.set(tenantId, state);
+    }
   }
 
   if (event.type === 'invoice.payment_failed') {

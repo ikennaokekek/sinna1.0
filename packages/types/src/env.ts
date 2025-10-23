@@ -10,8 +10,12 @@ export const EnvSchema = z
     REDIS_URL: z.string().url('REDIS_URL must be a valid URL'),
     BASE_URL: z.string().url('BASE_URL must be a valid URL'),
 
+    TRUST_PROXIES: z.string().optional(),
+    TRUSTED_CIDRS: z.string().optional(),
+
     STRIPE_SECRET_KEY: z.string().min(1, 'STRIPE_SECRET_KEY is required'),
     STRIPE_WEBHOOK_SECRET: z.string().min(1, 'STRIPE_WEBHOOK_SECRET is required'),
+    STRIPE_STANDARD_PRICE_ID: z.string().min(1, 'STRIPE_STANDARD_PRICE_ID is required'),
 
     CLOUDINARY_URL: z.string().url('CLOUDINARY_URL must be a valid URL'),
 
@@ -19,6 +23,7 @@ export const EnvSchema = z
     OPENAI_API_KEY: z.string().optional(),
 
     WEBHOOK_SIGNING_SECRET: z.string().min(1, 'WEBHOOK_SIGNING_SECRET is required'),
+    WEBHOOK_HMAC_HEADER: z.string().optional(),
   })
   .refine(
     (vals) => Boolean(vals.ASSEMBLYAI_API_KEY) || Boolean(vals.OPENAI_API_KEY),
