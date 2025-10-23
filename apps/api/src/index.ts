@@ -149,7 +149,11 @@ app.addHook('preHandler', async (req, reply) => {
   (req as any).tenantId = row.tenant_id as string;
 });
 
-app.get('/health', async () => ({ ok: true, uptime: process.uptime() }));
+app.get('/health', async (req, reply) => {
+  const key = req.headers['x-api-key'];
+  if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
+  return { ok: true, uptime: process.uptime() };
+});
 
 // Readiness probe: quick DB ping only
 app.get('/readiness', async (_req, reply) => {
