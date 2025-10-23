@@ -137,7 +137,6 @@ app.addHook('preHandler', async (req, reply) => {
   // Allow public health/readiness/metrics/docs and Stripe webhooks to bypass auth
   if (
     req.url === '/webhooks/stripe' ||
-    req.url === '/readiness' ||
     req.url === '/metrics' ||
     req.url.startsWith('/api-docs')
   ) {
@@ -166,7 +165,9 @@ app.get('/health', async (req, reply) => {
 });
 
 // Readiness probe: quick DB ping only
-app.get('/readiness', async (_req, reply) => {
+app.get('/readiness', async (req, reply) => {
+  const key = req.headers['x-api-key'];
+  if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
   try {
     const { pool } = getDb();
     await pool.query('select 1');
