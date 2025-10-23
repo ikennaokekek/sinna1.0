@@ -457,11 +457,29 @@ app.get('/v1/jobs/:id', async (req, res) => {
   }
 
   const artifacts: any[] = [];
-  if (c?.isCompleted()) artifacts.push({ type: 'subtitles', format: 'vtt', url: 'https://example.com/subtitles.vtt' });
-  if (a?.isCompleted()) artifacts.push({ type: 'audio_description', format: 'mp3', url: 'https://example.com/ad.mp3' });
-  if (cl?.isCompleted()) artifacts.push({ type: 'color_report', format: 'json', url: 'https://example.com/color.json' });
+  if (c?.isCompleted()) {
+    const cResult = c.returnvalue as any;
+    if (cResult?.artifactKey) {
+      const signedUrl = await getSignedGetUrl(cResult.artifactKey);
+      artifacts.push({ type: 'subtitles', format: 'vtt', url: signedUrl, key: cResult.artifactKey });
+    }
+  }
+  if (a?.isCompleted()) {
+    const aResult = a.returnvalue as any;
+    if (aResult?.artifactKey) {
+      const signedUrl = await getSignedGetUrl(aResult.artifactKey);
+      artifacts.push({ type: 'audio_description', format: 'mp3', url: signedUrl, key: aResult.artifactKey });
+    }
+  }
+  if (cl?.isCompleted()) {
+    const clResult = cl.returnvalue as any;
+    if (clResult?.artifactKey) {
+      const signedUrl = await getSignedGetUrl(clResult.artifactKey);
+      artifacts.push({ type: 'color_report', format: 'json', url: signedUrl, key: clResult.artifactKey });
+    }
+  }
 
-  const exportPackUrl = artifacts.length ? 'https://example.com/export.zip' : null;
+  const exportPackUrl = artifacts.length ? await getSignedGetUrl(`exports/${id}.zip`) : null;
 
   return res.send({ success: true, data: { id, status, artifacts, exportPackUrl } });
 });
