@@ -180,6 +180,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.657.0
+        version: 3.888.0
       '@sinna/types':
         specifier: workspace:*
         version: link:../../packages/types
