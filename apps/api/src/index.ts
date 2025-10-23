@@ -309,17 +309,20 @@ const tenants = new Map<string, TenantState>();
 // Subscription gating now handled in the auth preHandler above
 
 // BullMQ queues (same names as backend)
-const captionsQ: any = redis ? new Queue('captionsQ', { connection: redis }) : {
+let captionsQ: any = {
   add: async (_name: string, _data: any) => ({ id: `stub-${Date.now()}-c` }),
   count: async () => 0,
+  getJob: async (_id: string) => null,
 };
-const adQ: any = redis ? new Queue('adQ', { connection: redis }) : {
+let adQ: any = {
   add: async (_name: string, _data: any) => ({ id: `stub-${Date.now()}-a` }),
   count: async () => 0,
+  getJob: async (_id: string) => null,
 };
-const colorQ: any = redis ? new Queue('colorQ', { connection: redis }) : {
+let colorQ: any = {
   add: async (_name: string, _data: any) => ({ id: `stub-${Date.now()}-col` }),
   count: async () => 0,
+  getJob: async (_id: string) => null,
 };
 
 // POST /v1/jobs: validate, idempotency, enqueue pipeline
