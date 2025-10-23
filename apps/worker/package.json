@@ -10,6 +10,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@sinna/types": "workspace:*",
     "bullmq": "^4.15.0",
     "ioredis": "^5.3.2",
     "pg": "^8.16.3"

@@ -1,31 +1,31 @@
 # Sinna API - Environment Variables & Secrets
 
-This document contains all the environment variables and secrets needed to run the Sinna API.
+This document lists environment variables required by the system. Do not commit real secrets here.
 
 ## Required Environment Variables
 
 ### CHECKPOINT 1 - Cloudflare R2 Storage
 ```bash
-R2_ACCOUNT_ID=df7855d26a40bad170d0ad63c971c168
-R2_ACCESS_KEY_ID=2805e41f04f4f72992872ce8cd0941e5
-R2_SECRET_ACCESS_KEY=a5b80e55be0a618389c32c03db5784b2350e2593515b16bc086578c579f15721
+R2_ACCOUNT_ID=__R2_ACCOUNT_ID__
+R2_ACCESS_KEY_ID=__R2_ACCESS_KEY_ID__
+R2_SECRET_ACCESS_KEY=__R2_SECRET_ACCESS_KEY__
 R2_BUCKET=sinna1-0
 ```
 
 ### CHECKPOINT 2 - Upstash Redis
 ```bash
-REDIS_URL=rediss://default:AWMYAAIncDFjZGEwYTJlMGJlMjU0YzkzYjdkYjZmYmNhYmViM2VlNnAxMjUzNjg@good-owl-25368.upstash.io:6379
+REDIS_URL=rediss://default:__TOKEN__@__HOST__:6379
 ```
 
 ### CHECKPOINT 3 - Cloudinary
 ```bash
-CLOUDINARY_URL=cloudinary://<your_api_key>:<your_api_secret>@dhumkzsdp
+CLOUDINARY_URL=cloudinary://<your_api_key>:<your_api_secret>@<cloud_name>
 ```
 
 ### CHECKPOINT 4 - STT/TTS Services
 ```bash
-ASSEMBLYAI_API_KEY=e3c8fabeb964421bb79ce122c700b711
-OPENAI_API_KEY=your_openai_api_key_here
+ASSEMBLYAI_API_KEY=your-assemblyai-key
+OPENAI_API_KEY=sk-...
 
 # AI Provider Configuration
 PROVIDER_CAPTIONS=assemblyai_realtime  # live
@@ -35,22 +35,22 @@ PROVIDER_CAPTIONS_VOD=whisper          # batch fallback
 
 ### CHECKPOINT 5 - Stripe Payment Processing
 ```bash
-STRIPE_SECRET_KEY=your_stripe_secret_key_here
-STRIPE_WEBHOOK_SECRET=your_stripe_webhook_secret_here
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_WEBHOOK_SECRET=whsec_...
 ```
 
 ### CHECKPOINT 6 - Monitoring & Analytics
 ```bash
-SENTRY_DSN=https://a7b2f95a71fdc2aa9380b3f6230d846b@o4510008512544768.ingest.de.sentry.io/4510008525193296
+SENTRY_DSN=https://<public_key>@sentry.io/<project_id>
 GRAFANA_PROM_PUSH_URL=  # Optional
 ```
 
 ## Server Configuration
 ```bash
-PORT=3002
+PORT=4000
 NODE_ENV=development
-BASE_URL=http://localhost:3002
-DATABASE_URL=postgresql://user:password@localhost:5432/sinna_db
+BASE_URL=http://localhost:4000 , https://sinna1-0.onrender.com
+DATABASE_URL=postgresql://USER:PASS@HOST:PORT/DB
 JWT_SECRET=your-super-secret-jwt-key-here
 API_RATE_LIMIT=100
 ```
@@ -64,13 +64,13 @@ GPU_PROVIDER=none
 ## Setup Instructions
 
 1. Copy `env.example` to `.env`
-2. Fill in the required values for each checkpoint as you progress
-3. For production deployment, ensure all secrets are properly configured in your hosting platform
-4. Never commit `.env` files to version control
+2. Fill in the required values per environment (local, staging, prod)
+3. For production, set all secrets in your hosting platform (Render) only
+4. Never commit `.env` files or real credentials to version control
 
 ## Security Notes
 
-- All API keys should be kept secure and rotated regularly
-- Use different keys for development, staging, and production environments
+- Keep API keys secure and rotate regularly
+- Use different keys for development, staging, and production
 - Monitor usage and set up alerts for unusual activity
 - Enable webhook signature verification for all external services

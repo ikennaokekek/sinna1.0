@@ -21,6 +21,16 @@ import { getDb, runMigrations } from './lib/db';
 import { hashKey } from './lib/auth';
 import { incrementAndGateUsage } from './lib/usage';
 import { isProduction } from './config/env';
+import { validateEnv } from '@sinna/types';
+
+// Validate environment early (log and exit on error)
+try {
+  validateEnv(process.env);
+} catch (e: any) {
+  // eslint-disable-next-line no-console
+  console.error('Invalid environment configuration:', e?.message || e);
+  process.exit(1);
+}
 
 const app = Fastify({
   logger: true,
