@@ -226,7 +226,7 @@ function toVtt(segments: Array<{ start: number; end: number; text: string }>): s
     await uploadToR2(key, Buffer.from(JSON.stringify(summary)), 'application/json');
     return { ok: true, artifactKey: key, tenantId };
   }, { connection });
-}
+  }
 
 for (const ev of events) {
   ev.on('completed', async ({ jobId, returnvalue }) => {
