@@ -127,7 +127,6 @@ app.addHook('preHandler', async (req, reply) => {
   // Allow public health/readiness/metrics/docs and Stripe webhooks to bypass auth
   if (
     req.url === '/webhooks/stripe' ||
-    req.url === '/health' ||
     req.url === '/readiness' ||
     req.url === '/metrics' ||
     req.url.startsWith('/api-docs')
