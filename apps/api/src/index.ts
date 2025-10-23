@@ -12,6 +12,7 @@ import IORedis from 'ioredis';
 import crypto from 'crypto';
 // duplicate imports removed
 import { Queue } from 'bullmq';
+import { redisConnection } from './lib/redis';
 import Stripe from 'stripe';
 import * as Sentry from '@sentry/node';
 import fastifyRawBody from 'fastify-raw-body';
@@ -308,22 +309,10 @@ const tenants = new Map<string, TenantState>();
 
 // Subscription gating now handled in the auth preHandler above
 
-// BullMQ queues (same names as backend)
-let captionsQ: any = {
-  add: async (_name: string, _data: any) => ({ id: `stub-${Date.now()}-c` }),
-  count: async () => 0,
-  getJob: async (_id: string) => null,
-};
-let adQ: any = {
-  add: async (_name: string, _data: any) => ({ id: `stub-${Date.now()}-a` }),
-  count: async () => 0,
-  getJob: async (_id: string) => null,
-};
-let colorQ: any = {
-  add: async (_name: string, _data: any) => ({ id: `stub-${Date.now()}-col` }),
-  count: async () => 0,
-  getJob: async (_id: string) => null,
-};
+// BullMQ queues (shared Redis connection)
+const captionsQ = new Queue('captions', { connection: redisConnection as any });
+const adQ = new Queue('ad', { connection: redisConnection as any });
+const colorQ = new Queue('color', { connection: redisConnection as any });
 
 // POST /v1/jobs: validate, idempotency, enqueue pipeline
 app.post('/v1/jobs', async (req, res) => {
