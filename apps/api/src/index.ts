@@ -169,14 +169,7 @@ app.addHook('onSend', async (req, reply, payload) => {
   return payload as any;
 });
 
-app.get('/v1/demo', async () => ({
-  message: 'Welcome to Sinna API',
-  quickstart: {
-    createJob: 'POST /v1/jobs { source_url, preset_id? }',
-    pollJob: 'GET /v1/jobs/{id}',
-    usage: 'GET /v1/me/usage'
-  }
-}));
+app.get('/v1/demo', async () => ({ ok: true, now: new Date().toISOString() }));
 // Rate limit (rate-limiter-flexible): single global limiter with bypass + headers
 const redisUrl = process.env.REDIS_URL;
 let redis: IORedis | null = null;
