@@ -180,6 +180,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@sinna/types':
+        specifier: workspace:*
+        version: link:../../packages/types
       bullmq:
         specifier: ^4.15.0
         version: 4.18.3
