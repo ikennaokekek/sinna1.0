@@ -118,12 +118,18 @@ function toVtt(segments: Array<{ start: number; end: number; text: string }>): s
 if (connection) {
   // captions
   new Worker('captions', async (job) => {
+    console.log('🎬 Captions job started:', job.id, job.data);
     const { videoUrl, language = 'en', tenantId } = job.data || {};
-    if (!videoUrl) return { ok: false, error: 'missing_video_url' };
+    if (!videoUrl) {
+      console.log('❌ Missing videoUrl in job data');
+      return { ok: false, error: 'missing_video_url' };
+    }
+    console.log('🎯 Processing captions for:', videoUrl);
     const { segments } = await transcribeWithAssemblyAI(videoUrl, { language });
     const vtt = toVtt(segments);
     const key = `artifacts/${tenantId || 'anon'}/${job.id}.vtt`;
     await uploadToR2(key, Buffer.from(vtt, 'utf-8'), 'text/vtt');
+    console.log('✅ Captions completed:', key);
     return { ok: true, artifactKey: key, tenantId };
   }, { connection });
 
