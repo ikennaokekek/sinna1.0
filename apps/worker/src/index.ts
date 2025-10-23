@@ -13,30 +13,39 @@ import IORedis from 'ioredis';
 import { Pool } from 'pg';
 import OpenAI from 'openai';
 
-const redisUrl = process.env.REDIS_URL;
-let connection: IORedis | null = null;
-if (redisUrl) {
-  const client = new IORedis(redisUrl, {
-    lazyConnect: true,
-    maxRetriesPerRequest: 0,
-    enableReadyCheck: false,
-    retryStrategy: () => null,
-    connectTimeout: 1000,
-  } as any);
-  client.connect().then(() => {
-    console.log('Worker Redis connected');
-  }).catch((e) => {
-    console.warn('Worker Redis unavailable, running without queues', e?.message || e);
-  });
-  connection = client as any;
-} else {
-  console.warn('REDIS_URL not set; worker will idle');
-}
+async function startWorkers() {
+  const redisUrl = process.env.REDIS_URL;
+  let connection: IORedis | null = null;
 
-// Process the three API queues (must match API queue names)
-const qNames = ['captions', 'ad', 'color'] as const;
-const queues = connection ? qNames.map((n) => new Queue(n, { connection })) : [];
-const events = connection ? qNames.map((n) => new QueueEvents(n, { connection })) : [];
+  // Initialize Redis connection first
+  if (redisUrl) {
+    const client = new IORedis(redisUrl, {
+      lazyConnect: false,
+      maxRetriesPerRequest: 3,
+      enableReadyCheck: true,
+      retryStrategy: (times: number) => {
+        const delay = Math.min(times * 50, 2000);
+        return delay;
+      },
+      connectTimeout: 5000,
+    } as any);
+    
+    try {
+      await client.connect();
+      console.log('Worker Redis connected');
+      connection = client;
+    } catch (e: any) {
+      console.warn('Worker Redis unavailable, running without queues', e?.message || e);
+      connection = null;
+    }
+  } else {
+    console.warn('REDIS_URL not set; worker will idle');
+  }
+
+  // Process the three API queues (must match API queue names)
+  const qNames = ['captions', 'ad', 'color'] as const;
+  const queues = connection ? qNames.map((n) => new Queue(n, { connection })) : [];
+  const events = connection ? qNames.map((n) => new QueueEvents(n, { connection })) : [];
 
 // Minimal DB client for usage updates
 const databaseUrl = process.env.DATABASE_URL;
@@ -243,8 +252,11 @@ for (const ev of events) {
       console.error('Failed to update usage on completion', e);
     }
   });
+
+  console.log('Worker running for queues', qNames.join(', '));
 }
 
-console.log('Worker running for queues', qNames.join(', '));
+// Start the workers
+startWorkers().catch(console.error);
 
 
