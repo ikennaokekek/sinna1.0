@@ -31,8 +31,8 @@ if (redisUrl) {
   console.warn('REDIS_URL not set; worker will idle');
 }
 
-// Process the three API queues
-const qNames = ['captionsQ', 'adQ', 'colorQ'] as const;
+// Process the three API queues (must match API queue names)
+const qNames = ['captions', 'ad', 'color'] as const;
 const queues = connection ? qNames.map((n) => new Queue(n, { connection })) : [];
 const events = connection ? qNames.map((n) => new QueueEvents(n, { connection })) : [];
 
