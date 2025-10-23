@@ -13,8 +13,10 @@ export const EnvSchema = z
     TRUST_PROXIES: z.string().optional(),
     TRUSTED_CIDRS: z.string().optional(),
 
-    STRIPE_SECRET_KEY: z.string().min(1, 'STRIPE_SECRET_KEY is required'),
-    STRIPE_WEBHOOK_SECRET: z.string().min(1, 'STRIPE_WEBHOOK_SECRET is required'),
+    STRIPE_SECRET_KEY: z.string().optional(),
+    STRIPE_SECRET_KEY_LIVE: z.string().optional(),
+    STRIPE_WEBHOOK_SECRET: z.string().optional(),
+    STRIPE_WEBHOOK_SECRET_LIVE: z.string().optional(),
     STRIPE_STANDARD_PRICE_ID: z.string().min(1, 'STRIPE_STANDARD_PRICE_ID is required'),
 
     CLOUDINARY_URL: z.string().url('CLOUDINARY_URL must be a valid URL'),
@@ -25,13 +27,18 @@ export const EnvSchema = z
     WEBHOOK_SIGNING_SECRET: z.string().min(1, 'WEBHOOK_SIGNING_SECRET is required'),
     WEBHOOK_HMAC_HEADER: z.string().optional(),
   })
-  .refine(
-    (vals) => Boolean(vals.ASSEMBLYAI_API_KEY) || Boolean(vals.OPENAI_API_KEY),
-    {
-      message: 'Either ASSEMBLYAI_API_KEY or OPENAI_API_KEY must be set',
-      path: ['ASSEMBLYAI_API_KEY'],
-    },
-  );
+  .refine((vals) => Boolean(vals.ASSEMBLYAI_API_KEY) || Boolean(vals.OPENAI_API_KEY), {
+    message: 'Either ASSEMBLYAI_API_KEY or OPENAI_API_KEY must be set',
+    path: ['ASSEMBLYAI_API_KEY'],
+  })
+  .refine((vals) => Boolean(vals.STRIPE_SECRET_KEY) || Boolean(vals.STRIPE_SECRET_KEY_LIVE), {
+    message: 'STRIPE_SECRET_KEY or STRIPE_SECRET_KEY_LIVE must be set',
+    path: ['STRIPE_SECRET_KEY'],
+  })
+  .refine((vals) => Boolean(vals.STRIPE_WEBHOOK_SECRET) || Boolean(vals.STRIPE_WEBHOOK_SECRET_LIVE), {
+    message: 'STRIPE_WEBHOOK_SECRET or STRIPE_WEBHOOK_SECRET_LIVE must be set',
+    path: ['STRIPE_WEBHOOK_SECRET'],
+  });
 
 export type Env = z.infer<typeof EnvSchema>;
 
