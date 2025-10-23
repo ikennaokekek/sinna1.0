@@ -134,7 +134,7 @@ app.get('/metrics', async (req, res) => {
 
 // Auth preHandler: validate API key, check subscription/grace, attach tenantId
 app.addHook('preHandler', async (req, reply) => {
-  // Allow public health/readiness/metrics/docs and Stripe webhooks to bypass auth
+  // Allow public metrics/docs and Stripe webhooks to bypass auth
   if (
     req.url === '/webhooks/stripe' ||
     req.url === '/metrics' ||
