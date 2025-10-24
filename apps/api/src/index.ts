@@ -495,12 +495,12 @@ app.get('/v1/me/usage', async (req, res) => {
 });
 
 // Raw-body Stripe webhook route (tolerate missing keys to avoid boot failure)
-const stripeKey = process.env.STRIPE_SECRET_KEY_LIVE || process.env.STRIPE_SECRET_KEY || '';
+const stripeKey = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY_LIVE || '';
 const stripe = stripeKey ? new Stripe(stripeKey, { apiVersion: '2023-10-16' }) : null;
 
 app.post('/webhooks/stripe', { config: { rawBody: true } }, async (req, res) => {
   const sig = req.headers['stripe-signature'] as string;
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET_LIVE || process.env.STRIPE_WEBHOOK_SECRET || '';
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET_LIVE || '';
   if (!stripe || !webhookSecret) {
     return res.code(503).send({ success: false, error: 'stripe_unconfigured' });
   }
