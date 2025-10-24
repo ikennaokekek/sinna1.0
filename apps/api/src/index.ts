@@ -18,7 +18,7 @@ import * as Sentry from '@sentry/node';
 import fastifyRawBody from 'fastify-raw-body';
 import { sendEmailNotice } from './lib/email';
 import { RateLimiterRedis, RateLimiterMemory } from 'rate-limiter-flexible';
-import { getDb, runMigrations } from './lib/db';
+import { getDb, runMigrations, seedTenantAndApiKey } from './lib/db';
 import { hashKey } from './lib/auth';
 import { incrementAndGateUsage } from './lib/usage';
 import { isProduction } from './config/env';
@@ -525,12 +525,35 @@ app.post('/webhooks/stripe', { config: { rawBody: true } }, async (req, res) => 
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session;
-    const tenantId = (session.client_reference_id || session.subscription as string || '') as string;
-    if (tenantId) {
-      const state = tenants.get(tenantId) || { active: false, usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 } } as TenantState;
-      state.active = true;
-      state.graceUntil = undefined;
-      tenants.set(tenantId, state);
+    const email = session.customer_details?.email;
+    
+    if (email) {
+      try {
+        // Generate API key
+        const crypto = require('crypto');
+        const apiKey = crypto.randomBytes(32).toString('hex');
+        const hashed = crypto.createHash('sha256').update(apiKey).digest('hex');
+        
+        // Store in database using existing helper
+        const { tenantId } = await seedTenantAndApiKey({
+          tenantName: email, // Use email as tenant name
+          plan: 'standard',
+          apiKeyHash: hashed
+        });
+        
+        // Update in-memory state
+        const state = tenants.get(tenantId) || { active: false, usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 } } as TenantState;
+        state.active = true;
+        state.graceUntil = undefined;
+        tenants.set(tenantId, state);
+        
+        // Send email with API key (you'll need to implement sendEmail function)
+        req.log.info({ email, tenantId }, 'New subscription created, API key generated');
+        // TODO: Implement sendEmail(email, `Your Sinna API key: ${apiKey}`);
+        
+      } catch (error) {
+        req.log.error({ error, email }, 'Failed to create tenant and API key for new subscription');
+      }
     }
   }
 
