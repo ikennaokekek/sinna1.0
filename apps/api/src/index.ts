@@ -771,7 +771,7 @@ async function start() {
             email: 'motion24inc@gmail.com'
           }
         },
-        servers: [{ url: process.env.BASE_URL || 'https://sinna.site' }],
+        servers: [{ url: process.env.BASE_URL || (process.env.NODE_ENV === 'production' ? 'https://sinna.site' : 'http://localhost:4000') }],
         tags: [
           { name: 'System', description: 'System health and monitoring endpoints' },
           { name: 'Jobs', description: 'Video processing job management' },
