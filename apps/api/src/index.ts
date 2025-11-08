@@ -123,9 +123,10 @@ try {
   process.exit(1);
 }
 
-// Swagger configuration (will be registered after routes)
-const swaggerConfig = {
-  mode: 'dynamic' as const,
+// Swagger (OpenAPI) docs for Fastify API
+// IMPORTANT: Swagger must be registered BEFORE routes so it can hook into route registration
+app.register(fastifySwagger, {
+  mode: 'dynamic',
   openapi: {
     info: { 
       title: 'Sinna API', 
@@ -156,7 +157,14 @@ const swaggerConfig = {
       }
     }
   }
-};
+});
+app.register(fastifySwaggerUi, { 
+  routePrefix: '/api-docs',
+  uiConfig: { 
+    docExpansion: 'list',
+    persistAuthorization: true
+  }
+});
 
 // CORS
 try {
@@ -818,19 +826,10 @@ async function start() {
     }
     
     // Register routes after redis is initialized
+    // Note: Swagger is already registered above, so it will capture these routes via onRoute hook
     registerRoutes();
     // Register job routes with current redis state
     registerJobRoutes(app, { captions: captionsQ, ad: adQ, color: colorQ, videoTransform: videoTransformQ }, redis, queueDepth, failuresTotal);
-    
-    // Register Swagger AFTER all routes are registered (so it can scan them)
-    await app.register(fastifySwagger, swaggerConfig);
-    await app.register(fastifySwaggerUi, { 
-      routePrefix: '/api-docs',
-      uiConfig: { 
-        docExpansion: 'list',
-        persistAuthorization: true
-      }
-    });
     
     // Sanity check: print environment
     // eslint-disable-next-line no-console
