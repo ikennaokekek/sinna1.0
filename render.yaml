@@ -4,7 +4,7 @@ services:
     name: sinna-api
     runtime: node
     plan: standard
-    region: oregon
+    region: frankfurt
     buildCommand: pnpm i --frozen-lockfile && pnpm build
     startCommand: node apps/api/dist/index.js
     healthCheckPath: /health
@@ -23,6 +23,8 @@ services:
           property: host
       
       # Database & Cache (from secrets)
+      - key: DATABASE_URL
+        sync: false
       - key: REDIS_URL
         sync: false
       
@@ -57,9 +59,23 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: STRIPE_STANDARD_PRICE_ID
+        sync: false
+      - key: WEBHOOK_SIGNING_SECRET
+        sync: false
+      
+      # Email Service (from secrets)
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: NOTIFY_FROM_EMAIL
+        sync: false
       
       # Monitoring (from secrets)
       - key: SENTRY_DSN
+        sync: false
+      - key: STATUS_PAGE_URL
         sync: false
       
       # Security
@@ -68,11 +84,33 @@ services:
       - key: API_RATE_LIMIT
         value: 1000
       
+      # CORS
+      - key: CORS_ORIGINS
+        sync: false
+      
+      # Boot behavior
+      - key: RUN_MIGRATIONS_ON_BOOT
+        value: 1
+      
       # Feature Flags
       - key: FEATURE_REALTIME
         value: 0
       - key: GPU_PROVIDER
         value: none
+      
+      # Additional Configuration
+      - key: GRACE_DAYS
+        value: 7
+      - key: TRUST_PROXIES
+        value: 1
+      - key: TRUSTED_CIDRS
+        sync: false
+      - key: WEBHOOK_HMAC_HEADER
+        value: x-webhook-signature
+      - key: NOTIFY_FALLBACK_EMAIL
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
 
     # Scaling Configuration
     scaling:
@@ -95,7 +133,7 @@ services:
     name: sinna-worker
     runtime: node
     plan: standard
-    region: oregon
+    region: frankfurt
     buildCommand: pnpm i --frozen-lockfile && pnpm build
     startCommand: node apps/worker/dist/index.js
     autoDeploy: true
@@ -111,6 +149,8 @@ services:
           property: host
       
       # Database & Cache (from secrets)
+      - key: DATABASE_URL
+        sync: false
       - key: REDIS_URL
         sync: false
       
@@ -145,6 +185,18 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: STRIPE_STANDARD_PRICE_ID
+        sync: false
+      - key: WEBHOOK_SIGNING_SECRET
+        sync: false
+      
+      # Email Service (from secrets)
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: NOTIFY_FROM_EMAIL
+        sync: false
       
       # Monitoring (from secrets)
       - key: SENTRY_DSN
@@ -159,6 +211,20 @@ services:
         value: 0
       - key: GPU_PROVIDER
         value: none
+      
+      # Additional Configuration
+      - key: GRACE_DAYS
+        value: 7
+      - key: TRUST_PROXIES
+        value: 1
+      - key: TRUSTED_CIDRS
+        sync: false
+      - key: WEBHOOK_HMAC_HEADER
+        value: x-webhook-signature
+      - key: NOTIFY_FALLBACK_EMAIL
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
 
     # Worker Scaling Configuration
     scaling:
@@ -166,6 +232,74 @@ services:
       maxInstances: 5
       targetMemoryPercent: 80
       targetCPUPercent: 80
+
+  # Watchdog Service - Automated Log Monitoring & Auto-Healing
+  - type: worker
+    name: sinna-watchdog
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: pnpm i --frozen-lockfile
+    startCommand: pnpm watchdog
+    envVars:
+      - key: NODE_ENV
+        value: production
+      
+      # Render API Configuration (from secrets)
+      - key: RENDER_SERVICE_ID
+        sync: false
+      - key: RENDER_API_KEY
+        sync: false
+      
+      # API Configuration for auto-heal tests
+      - key: E2E_BASE_URL
+        fromService:
+          type: web
+          name: sinna-api
+          property: host
+      - key: API_BASE_URL
+        fromService:
+          type: web
+          name: sinna-api
+          property: host
+      - key: TEST_API_KEY
+        sync: false
+      - key: API_KEY
+        sync: false
+      
+      # Optional: Slack notifications
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+      
+      # Optional: Test video URL
+      - key: TEST_VIDEO_URL
+        sync: false
+      
+      # Database & Cache (from secrets - for auto-heal tests)
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      
+      # R2 Storage (from secrets - for auto-heal tests)
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      
+      # AI Services (from secrets - for auto-heal tests)
+      - key: ASSEMBLYAI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      
+      # Media Processing (from secrets - for auto-heal tests)
+      - key: CLOUDINARY_URL
+        sync: false
 
 # Databases (if needed in future)
 databases: []

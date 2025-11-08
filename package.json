@@ -10,6 +10,11 @@
     "start": "node apps/api/dist/index.js",
     "start:worker": "node apps/worker/dist/index.js",
     "test": "jest",
+    "test:vitest": "vitest run",
+    "test:heal": "vitest run tests/videoTransform.heal.ts",
+    "watchdog": "tsx scripts/watchdog.ts",
+    "watchdog:dev": "tsx watch scripts/watchdog.ts",
+    "test:api": "tsx scripts/test-api-endpoints.ts",
     "test:e2e": "E2E_BASE_URL=http://localhost:4000 npx playwright test",
     "docker": "docker compose up -d",
     "gen:postman": "node scripts/generate-postman.js"

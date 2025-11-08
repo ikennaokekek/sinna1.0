@@ -7,6 +7,15 @@ export interface AuthenticatedRequest extends FastifyRequest {
   tenantId?: string;
   rawBody?: Buffer;
   requestId?: string;
+  userLanguage?: string; // User's explicit language preference
+  resolvedLanguage?: string; // Resolved language after priority check
+  languageInfo?: {
+    resolved_language: string;
+    source: 'user_override' | 'browser_locale' | 'geo_ip' | 'fallback';
+    fallback_used: boolean;
+    region?: string;
+    country_code?: string;
+  };
 }
 
 // Standard API response format

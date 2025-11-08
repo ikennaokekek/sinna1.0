@@ -460,7 +460,7 @@ function generateBillingFolder() {
           method: 'GET',
           header: [],
           url: { raw: '{{BASE_URL}}/v1/billing/plans', host: ['{{BASE_URL}}'], path: ['v1', 'billing', 'plans'] },
-          description: 'Get available subscription plans (Standard $1500, Gold $3000)'
+          description: 'Get available subscription plans (Standard $2000, Pro $3000)'
         },
         response: []
       },
@@ -499,7 +499,7 @@ function generateBillingFolder() {
             }, null, 2)
           },
           url: { raw: '{{BASE_URL}}/v1/billing/checkout', host: ['{{BASE_URL}}'], path: ['v1', 'billing', 'checkout'] },
-          description: 'Create Stripe checkout session for Standard plan ($1500/month)'
+          description: 'Create Stripe checkout session for Standard plan ($2000/month)'
         },
         response: []
       },

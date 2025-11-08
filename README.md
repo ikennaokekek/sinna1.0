@@ -43,7 +43,7 @@ npm run test:e2e    # Run E2E tests
 - **🚀 Auto-scaling**: Queue-based processing with BullMQ
 
 ### Technical Stack
-- **API**: Express.js with TypeScript
+- **API**: Fastify with TypeScript
 - **Queue**: BullMQ with Redis
 - **Storage**: Cloudflare R2 + signed URLs
 - **Monitoring**: Sentry + Prometheus metrics
@@ -72,46 +72,60 @@ Note: The `archive/express` directory contains a deprecated Express implementati
 
 ## 💰 Subscription Plans
 
-### Standard - $1,500/month
-- 50,000 API requests
-- 2,500 transcription minutes
-- 1,250 audio description minutes
-- 2,000 color analysis requests
+### Standard - $2,000/month
+- 1,000 jobs per month (any combination)
+- 1,000 minutes processed per month
+- 50GB storage per month
 - Full webhook support
+- Rate limit: 120 requests/minute
 
-### Gold - $3,000/month
-- 150,000 API requests
-- 7,500 transcription minutes
-- 3,750 audio description minutes
-- 6,000 color analysis requests
-- Priority support + custom branding
+### Pro - $5,000/month
+- 10,000 jobs per month (any combination)
+- 10,000 minutes processed per month
+- 500GB storage per month
+- Full webhook support
+- Rate limit: 120 requests/minute
+- Priority support
+
+### Enterprise - Custom Pricing
+- Unlimited jobs per month
+- Unlimited minutes processed per month
+- Unlimited storage per month
+- Full webhook support
+- Rate limit: 120 requests/minute
+- Custom branding + dedicated support
 
 ## 🔧 API Endpoints
 
 ### Authentication
-All endpoints require API key authentication:
+Most endpoints require API key authentication via the `x-api-key` header:
 ```bash
 curl -H "x-api-key: sk_your_api_key" \
-  https://api.sinna.com/v1/endpoint
+  https://sinna.site/v1/jobs
 ```
 
+Public endpoints (no auth required):
+- `GET /health` - Health check
+- `GET /v1/demo` - Demo endpoint
+
 ### Core Endpoints
-- `POST /v1/audio/transcribe` - Transcribe audio to text
-- `POST /v1/audio/generate-subtitles` - Generate subtitle files
-- `POST /v1/audio/audio-description` - Create audio descriptions
-- `POST /v1/accessibility/color-analysis` - Analyze video colors
-- `POST /v1/jobs/subtitles` - Queue subtitle generation job
+- `POST /v1/jobs` - Create a job pipeline (captions + audio description + color analysis)
+- `GET /v1/jobs/:id` - Get job status and results
+- `GET /v1/me/usage` - Get current usage statistics
+- `GET /v1/me/subscription` - Get current subscription status
+- `GET /v1/files/:id/sign` - Get signed URL for artifact download
 
 ### Billing & Management
-- `GET /v1/billing/plans` - Available subscription plans
-- `POST /v1/billing/checkout` - Create checkout session
-- `GET /v1/billing/subscription` - Current subscription status
-- `POST /v1/billing/portal` - Customer portal access
+- `POST /v1/billing/subscribe` - Create Stripe checkout session
+- `GET /v1/me/subscription` - Current subscription status
+- `POST /webhooks/stripe` - Stripe webhook endpoint (handles subscription events)
 
-### Monitoring
-- `GET /health` - System health check
+### Monitoring & Health
+- `GET /health` - System health check (all services)
+- `GET /readiness` - Readiness probe (database only)
 - `GET /metrics` - Prometheus metrics
-- `GET /api-docs` - Interactive API documentation
+- `GET /api-docs` - Interactive API documentation (Swagger UI)
+- `GET /v1/demo` - Demo endpoint (no auth required)
 
 ## 🛠️ Configuration
 
@@ -135,8 +149,8 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 
 ### Optional Configuration
 ```bash
-# Media Processing
-CLOUDINARY_URL=cloudinary://key:secret@cloud
+# Media Processing (Optional - for advanced video color analysis)
+CLOUDINARY_URL=cloudinary://api_key:api_secret@cloud_name
 
 # Monitoring
 SENTRY_DSN=https://...@sentry.io/...
@@ -177,12 +191,31 @@ npm run start:worker   # Background worker
 - **Error Tracking**: Sentry integration
 - **Usage Analytics**: Per-tenant usage tracking
 
+### Self-Healing QA Automation ✅
+**SINNA 1.0 includes a self-healing QA suite that auto-detects and fixes pipeline failures across all accessibility presets.**
+
+- **Automated Testing**: End-to-end validation of all 8 video transformation presets (blindness, deaf, color_blindness, adhd, autism, epilepsy_flash, epilepsy_noise, cognitive_load)
+- **Auto-Healing**: Automatically detects and fixes configuration issues in real-time
+- **Watchdog Service**: Continuous log monitoring that triggers auto-healing when errors are detected
+- **Comprehensive Reports**: Detailed markdown reports generated after each test run
+- **Production Resilience**: Ensures pipeline stability and accessibility compliance
+
+**Key Features:**
+- ✅ Tests all video transformation presets automatically
+- ✅ Validates queue→worker→R2 flow end-to-end
+- ✅ Auto-fixes missing configurations (videoTransform flags, config objects)
+- ✅ Monitors Render logs every 10 minutes for recurring errors
+- ✅ Generates detailed reports for audit and debugging
+
+See `tests/AUTOHEAL_README.md` and `scripts/WATCHDOG_README.md` for complete documentation.
+
 ### Key Metrics
 - API request rates and latency
-- Transcription processing times
+- Job processing times (captions, audio description, color analysis)
 - Queue depth and job completion rates
 - Subscription usage and billing events
 - Error rates and system health
+- Per-tenant usage tracking (minutes, jobs, storage)
 
 ## 🔒 Security
 
@@ -194,7 +227,10 @@ npm run start:worker   # Background worker
 
 ## 📚 Documentation
 
-- **API Documentation**: Available at `/api-docs`
+- **API Documentation**: Available at `/api-docs` or `https://sinna.site/api-docs`
+- **Customer Onboarding**: See `docs/CUSTOMER_ONBOARDING.md`
+- **Terms of Service**: See `docs/TERMS_OF_SERVICE.md`
+- **Privacy Policy**: See `docs/PRIVACY_POLICY.md`
 - **Deployment Guide**: See `docs/DEPLOYMENT.md`
 - **Configuration**: See `docs/SECRETS.md`
 - **Postman Collection**: Generated automatically
@@ -208,9 +244,18 @@ npm test
 # E2E tests (requires running server)
 E2E_BASE_URL=http://localhost:4000 npm run test:e2e
 
+# Auto-healing QA suite
+npm run test:heal
+
+# Watchdog service (monitors logs and triggers auto-healing)
+npm run watchdog
+
 # Health check
 curl http://localhost:4000/health
 ```
+
+### QA Automation & Self-Healing ✅
+**QA automation and self-healing complete.** SINNA 1.0 includes a comprehensive self-healing QA suite that auto-detects and fixes pipeline failures across all accessibility presets, ensuring stability and resilience in production.
 
 ## 🤝 Support
 
@@ -221,10 +266,12 @@ curl http://localhost:4000/health
 4. Monitor usage and limits in your dashboard
 
 ### Common Issues
-- **Authentication**: Ensure API key starts with `sk_`
-- **Rate Limits**: Check subscription plan limits
+- **Authentication**: Ensure API key starts with `sk_` and is included in `x-api-key` header
+- **Rate Limits**: Check subscription plan limits (120 requests/minute global limit)
+- **Usage Limits**: Monitor `/v1/me/usage` for current usage against plan limits (minutes, jobs, storage)
 - **Queue Processing**: Verify Redis connection and worker status
-- **Media Processing**: Confirm storage and AI service credentials
+- **Media Processing**: Confirm storage (R2) and AI service credentials (AssemblyAI, OpenAI)
+- **Cloudinary**: Optional - only needed for advanced video color analysis
 
 ## 📈 Roadmap
 

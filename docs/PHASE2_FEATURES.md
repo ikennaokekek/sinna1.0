@@ -205,7 +205,7 @@ Seamless integration with popular platforms and developer tools.
 ## 💰 Pricing & Availability
 
 ### Subscription Tiers
-- **Standard ($1,500/month)** - Access to basic Phase-2 features
+- **Standard ($2,000/month)** - Access to basic Phase-2 features
 - **Gold ($3,000/month)** - Full access to all Phase-2 features
 
 ### Feature Access
@@ -291,7 +291,7 @@ curl https://your-app.onrender.com/metrics
 - **Documentation**: Complete API docs at `/api-docs`
 - **Health Check**: System status at `/health`
 - **Metrics**: Performance data at `/metrics`
-- **Support**: Contact support@sinna.com
+- **Support**: Contact motion24inc@gmail.com
 
 ### Providing Feedback
 - **Feature Requests**: Submit via support portal

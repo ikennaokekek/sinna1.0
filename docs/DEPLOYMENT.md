@@ -146,9 +146,10 @@ healthCheck:
 
 ### Monitoring Integration
 
-1. **Sentry**: Automatic error tracking and performance monitoring
+1. **Sentry**: Automatic error tracking and performance monitoring (set `SENTRY_DSN`)
 2. **Prometheus Metrics**: Available at `/metrics` endpoint
-3. **Grafana**: Optional dashboard integration via push gateway
+3. **UptimeRobot**: Monitor `/health` every 1 minute, alert on non-200
+4. **Grafana**: Optional dashboard integration via push gateway
 
 ## Scaling Configuration
 
@@ -196,7 +197,7 @@ scaling:
 3. **Health Check Failing**:
    ```bash
    # Test health endpoint locally
-   curl http://localhost:3002/health
+   curl http://localhost:4000/health
    ```
 
 4. **Worker Not Processing Jobs**:
@@ -235,7 +236,7 @@ node -e "console.log(process.env.REDIS_URL ? 'Redis configured' : 'Redis missing
 
 ```bash
 # Replace with your actual domain
-BASE_URL="https://your-app.onrender.com"
+BASE_URL="https://sinna1-0.onrender.com"
 
 # Health check
 curl $BASE_URL/health
@@ -244,14 +245,14 @@ curl $BASE_URL/health
 curl $BASE_URL/api-docs
 
 # Test authenticated endpoint (with valid API key)
-curl -H "x-api-key: sk_test_..." $BASE_URL/api/v1/billing/plans
+curl -H "x-api-key: sk_test_..." $BASE_URL/v1/billing/plans
 ```
 
 ### 3. Configure Webhooks
 
 Update webhook URLs in external services:
 
-- **Stripe**: `https://your-app.onrender.com/api/v1/billing/webhook`
+- **Stripe**: `https://your-app.onrender.com/v1/billing/webhook`
 - **Your App**: Use generated webhook URLs for job completion
 
 ### 4. Monitor Initial Traffic

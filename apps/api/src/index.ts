@@ -30,6 +30,7 @@ import { registerJobRoutes } from './routes/jobs';
 import { registerSubscriptionRoutes } from './routes/subscription';
 import { requestIdHook } from './middleware/requestId';
 import { sendErrorResponse } from './lib/errors';
+import { regionLanguageMiddleware } from './middleware/regionLanguage';
 
 const app = Fastify({
   logger: true,
@@ -39,6 +40,9 @@ const app = Fastify({
 
 // Add request ID to all requests
 app.addHook('onRequest', requestIdHook);
+
+// Add region-based language detection
+app.addHook('onRequest', regionLanguageMiddleware);
 
 // Add performance monitoring
 import { performanceMonitoringHook, performanceMonitoringOnSendHook } from './middleware/monitoring';

@@ -17,9 +17,16 @@
     "colorProfile": "high-contrast",
     "motionReduce": true,
     "strobeReduce": true,
-    "speed": 1.1,
+    "speed": 1.5,
     "adEnabled": true,
-    "subtitleFormats": ["vtt", "srt", "ttml"]
+    "subtitleFormats": ["vtt", "srt", "ttml"],
+    "videoTransform": true,
+    "videoTransformConfig": {
+      "motionReduce": true,
+      "saturation": 0.8,
+      "speed": 1.5,
+      "playbackSpeed": 1.5
+    }
   },
   "autism": {
     "captionStyle": "clear",
@@ -30,7 +37,14 @@
     "strobeReduce": true,
     "speed": 0.9,
     "adEnabled": true,
-    "subtitleFormats": ["vtt", "srt", "ttml"]
+    "subtitleFormats": ["vtt", "srt", "ttml"],
+    "videoTransform": true,
+    "videoTransformConfig": {
+      "motionReduce": true,
+      "strobeReduce": true,
+      "colorSoftening": true,
+      "saturation": 0.7
+    }
   },
   "low_vision": {
     "captionStyle": "large-high-contrast",
@@ -86,6 +100,105 @@
     "speed": 1.0,
     "adEnabled": true,
     "subtitleFormats": ["vtt", "srt", "ttml"]
+  },
+  "blindness": {
+    "captionStyle": "default",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "standard",
+    "motionReduce": false,
+    "strobeReduce": false,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"],
+    "videoTransform": true,
+    "videoTransformConfig": {
+      "audioDescription": true,
+      "contrastBoost": false,
+      "motionReduce": false,
+      "flashReduce": false
+    }
+  },
+  "deaf": {
+    "captionStyle": "descriptive",
+    "burnIn": true,
+    "translateLangs": [],
+    "colorProfile": "standard",
+    "motionReduce": false,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": false,
+    "subtitleFormats": ["vtt", "srt", "ttml"],
+    "videoTransform": true,
+    "videoTransformConfig": {
+      "captionOverlay": true,
+      "volumeBoost": true
+    }
+  },
+  "color_blindness": {
+    "captionStyle": "default",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "colorblind-safe",
+    "motionReduce": false,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"],
+    "videoTransform": true,
+    "videoTransformConfig": {
+      "colorProfile": "colorblind-safe",
+      "filter": "e_colorblind_correction"
+    }
+  },
+  "epilepsy_flash": {
+    "captionStyle": "default",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "low-contrast",
+    "motionReduce": false,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"],
+    "videoTransform": true,
+    "videoTransformConfig": {
+      "flashReduce": true,
+      "brightness": -0.05,
+      "contrast": -0.1
+    }
+  },
+  "epilepsy_noise": {
+    "captionStyle": "default",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "standard",
+    "motionReduce": false,
+    "strobeReduce": true,
+    "speed": 1.0,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"],
+    "videoTransform": true,
+    "videoTransformConfig": {
+      "audioSmooth": true,
+      "lowPassFilter": true
+    }
+  },
+  "cognitive_load": {
+    "captionStyle": "simplified",
+    "burnIn": false,
+    "translateLangs": [],
+    "colorProfile": "standard",
+    "motionReduce": true,
+    "strobeReduce": true,
+    "speed": 0.95,
+    "adEnabled": true,
+    "subtitleFormats": ["vtt", "srt", "ttml"],
+    "videoTransform": true,
+    "videoTransformConfig": {
+      "simplifiedText": true,
+      "focusHighlight": true
+    }
   }
 }
 

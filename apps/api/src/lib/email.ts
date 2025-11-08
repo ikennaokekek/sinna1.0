@@ -1,30 +1,96 @@
+// Simple logger interface for email service
+const logger = {
+  debug: (msg: string, data?: any) => {
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[EMAIL:DEBUG] ${msg}`, data || '');
+    }
+  },
+  info: (msg: string, data?: any) => {
+    console.log(`[EMAIL:INFO] ${msg}`, data || '');
+  },
+  warn: (msg: string, data?: any) => {
+    console.warn(`[EMAIL:WARN] ${msg}`, data || '');
+  },
+  error: (msg: string, data?: any) => {
+    console.error(`[EMAIL:ERROR] ${msg}`, data || '');
+  }
+};
+
 export async function sendEmailNotice(to: string, subject: string, text: string): Promise<void> {
-  // Prefer Resend if available; otherwise stub-log
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    // eslint-disable-next-line no-console
-    console.log('[EMAIL:STUB]', { to, subject, text });
-    return;
+  const fromEmail = process.env.NOTIFY_FROM_EMAIL || 'noreply@sinna.site';
+  
+  logger.debug('Email service check', {
+    resendKey: process.env.RESEND_API_KEY ? 'present' : 'missing',
+    sendgridKey: process.env.SENDGRID_API_KEY ? 'present' : 'missing',
+    fromEmail,
+    to,
+    subject
+  });
+  
+  // Try Resend first
+  const resendKey = process.env.RESEND_API_KEY;
+  if (resendKey) {
+    try {
+      logger.info('Attempting to send via Resend', { to, subject });
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resendKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: fromEmail,
+          to: [to],
+          subject,
+          text
+        })
+      });
+      
+      if (response.ok) {
+        logger.info('Email sent successfully via Resend', { to, subject, status: response.status });
+        return;
+      } else {
+        const errorText = await response.text().catch(() => '');
+        logger.warn('Resend API returned error', { status: response.status, statusText: response.statusText, error: errorText });
+      }
+    } catch (err) {
+      logger.error('Resend API request failed', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
-  // Minimal Resend REST call
-  try {
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        from: process.env.NOTIFY_FROM_EMAIL || 'no-reply@sinna.dev',
-        to: [to],
-        subject,
-        text
-      })
-    });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn('[EMAIL:FAIL]', err);
+
+  // Fallback to SendGrid
+  const sendgridKey = process.env.SENDGRID_API_KEY;
+  if (sendgridKey) {
+    try {
+      logger.info('Attempting to send via SendGrid', { to, subject });
+      const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${sendgridKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: to }] }],
+          from: { email: fromEmail },
+          subject,
+          content: [{ type: 'text/plain', value: text }]
+        })
+      });
+      
+      if (response.ok) {
+        logger.info('Email sent successfully via SendGrid', { to, subject, status: response.status });
+        return;
+      } else {
+        const errorText = await response.text().catch(() => '');
+        logger.warn('SendGrid API returned error', { status: response.status, statusText: response.statusText, error: errorText });
+      }
+    } catch (err) {
+      logger.error('SendGrid API request failed', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
+
+  // If both fail, log as stub
+  logger.warn('No email service configured or all services failed', { to, subject, reason: 'No email service configured' });
 }
 
 
