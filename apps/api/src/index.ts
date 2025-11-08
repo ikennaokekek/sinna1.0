@@ -146,22 +146,7 @@ const jobLatency = new Histogram({ name: 'job_latency_ms', help: 'Job latency in
 const queueDepth = new Gauge({ name: 'queue_depth', help: 'Queue depth per queue', labelNames: ['queue'], registers: [registry] });
 const failuresTotal = new Counter({ name: 'failures_total', help: 'Total failures', labelNames: ['type'], registers: [registry] });
 
-app.get('/metrics', {
-  schema: {
-    description: 'Prometheus metrics endpoint',
-    tags: ['System'],
-    hide: true, // Hide from Swagger UI
-    response: {
-      200: {
-        type: 'string',
-        description: 'Prometheus metrics in text format'
-      }
-    }
-  }
-}, async (req, res) => {
-  res.header('Content-Type', registry.contentType);
-  return res.send(await registry.metrics());
-});
+// Note: /metrics route is now registered via registerTopLevelRoutes() in start() to ensure Swagger captures it
 
 // Auth preHandler: validate API key, check subscription/grace, attach tenantId
 app.addHook('preHandler', async (req, reply) => {
@@ -191,32 +176,7 @@ app.addHook('preHandler', async (req, reply) => {
   (req as AuthenticatedRequest).tenantId = row.tenant_id as string;
 });
 
-app.get('/health', {
-  schema: {
-    description: 'Check if server is alive',
-    tags: ['System'],
-    security: [{ ApiKeyAuth: [] }],
-    response: {
-      200: {
-        type: 'object',
-        properties: {
-          ok: { type: 'boolean' },
-          uptime: { type: 'number' }
-        }
-      },
-      401: {
-        type: 'object',
-        properties: {
-          code: { type: 'string' }
-        }
-      }
-    }
-  }
-}, async (req, reply) => {
-  const key = req.headers['x-api-key'];
-  if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
-  return { ok: true, uptime: process.uptime() };
-});
+// Note: /health route is now registered via registerTopLevelRoutes() in start() to ensure Swagger captures it
 
 // Test email endpoint (for testing SendGrid/Resend integration) - Admin only
 app.post('/test-email', {
@@ -427,21 +387,8 @@ app.addHook('onSend', async (req, reply, payload) => {
   return payload;
 });
 
-app.get('/v1/demo', {
-  schema: {
-    description: 'Demo endpoint to verify API is working',
-    tags: ['System'],
-    response: {
-      200: {
-        type: 'object',
-        properties: {
-          ok: { type: 'boolean' },
-          now: { type: 'string', format: 'date-time' }
-        }
-      }
-    }
-  }
-}, async () => ({ ok: true, now: new Date().toISOString() }));
+// Note: /v1/demo route is now registered via registerTopLevelRoutes() in start() to ensure Swagger captures it
+
 // Rate limit (rate-limiter-flexible): single global limiter with bypass + headers
 const redisUrl = process.env.REDIS_URL;
 let redis: IORedis | null = null;
