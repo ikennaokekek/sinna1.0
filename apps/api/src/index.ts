@@ -577,6 +577,209 @@ function registerRoutes(): void {
   // Note: redis will be set in start() function, routes will use it when called
 }
 
+// Register all top-level routes (moved from top-level to ensure Swagger captures them)
+function registerTopLevelRoutes(): void {
+  // GET /metrics
+  app.get('/metrics', {
+    schema: {
+      description: 'Prometheus metrics endpoint',
+      tags: ['System'],
+      hide: true, // Hide from Swagger UI
+      response: {
+        200: {
+          type: 'string',
+          description: 'Prometheus metrics in text format'
+        }
+      }
+    }
+  }, async (req, res) => {
+    res.header('Content-Type', registry.contentType);
+    return res.send(await registry.metrics());
+  });
+
+  // GET /health
+  app.get('/health', {
+    schema: {
+      description: 'Check if server is alive',
+      tags: ['System'],
+      security: [{ ApiKeyAuth: [] }],
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            uptime: { type: 'number' }
+          }
+        },
+        401: {
+          type: 'object',
+          properties: {
+            code: { type: 'string' }
+          }
+        }
+      }
+    }
+  }, async (req, reply) => {
+    const key = req.headers['x-api-key'];
+    if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
+    return { ok: true, uptime: process.uptime() };
+  });
+
+  // GET /v1/demo
+  app.get('/v1/demo', {
+    schema: {
+      description: 'Demo endpoint to verify API is working',
+      tags: ['System'],
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ok: { type: 'boolean' },
+            now: { type: 'string', format: 'date-time' }
+          }
+        }
+      }
+    }
+  }, async () => ({ ok: true, now: new Date().toISOString() }));
+
+  // GET /v1/me/usage
+  app.get('/v1/me/usage', {
+    schema: {
+      description: 'Get current usage statistics for the billing period',
+      tags: ['Usage'],
+      security: [{ ApiKeyAuth: [] }],
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                period_start: { type: 'string', format: 'date-time' },
+                period_end: { type: 'string', format: 'date-time' },
+                requests: { type: 'number' },
+                minutes: { type: 'number' },
+                jobs: { type: 'number' },
+                storage: { type: 'number' },
+                cap: { type: 'number' }
+              }
+            }
+          }
+        },
+        401: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            error: { type: 'string' }
+          }
+        }
+      }
+    }
+  }, async (req, res) => {
+    const tenantId = (req as AuthenticatedRequest).tenantId;
+    if (!tenantId) {
+      return res.code(401).send({ success: false, error: 'unauthorized' });
+    }
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const state = tenants.get(tenantId) || {
+      active: false,
+      usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
+    } as TenantState;
+    res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
+  });
+
+  // GET /v1/files/:id:sign
+  app.get('/v1/files/:id:sign', {
+    schema: {
+      description: 'Generate a signed URL for file access',
+      tags: ['Files'],
+      security: [{ ApiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: {
+            type: 'string',
+            description: 'File ID or path in R2 storage'
+          }
+        }
+      },
+      querystring: {
+        type: 'object',
+        properties: {
+          ttl: {
+            type: 'number',
+            description: 'URL expiration in seconds (default: 3600, max: 86400)'
+          }
+        }
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                url: { type: 'string', format: 'uri' },
+                expires_in: { type: 'number' }
+              }
+            }
+          }
+        },
+        400: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            error: { type: 'string' },
+            details: { type: 'array' }
+          }
+        },
+        401: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            error: { type: 'string' }
+          }
+        },
+        500: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            error: { type: 'string' }
+          }
+        }
+      }
+    }
+  }, async (req, res) => {
+    try {
+      const paramsObj: Record<string, unknown> = {
+        ...(req.params as Record<string, unknown>),
+        ...(req.query as Record<string, unknown>),
+      };
+      const params = z
+        .object({ 
+          id: z.string().min(1).max(255).regex(/^[a-zA-Z0-9_\-/]+$/, 'File ID contains invalid characters'), 
+          ttl: z.coerce.number().int().positive().max(86400).optional() 
+        })
+        .parse(paramsObj);
+
+      const ttl = params.ttl ?? 3600;
+      const url = await getSignedGetUrl(params.id, ttl);
+      return { success: true, data: { url, expires_in: ttl } };
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.code(400).send({ success: false, error: 'Invalid parameters', details: error.errors });
+      }
+      req.log.error({ error }, 'Failed to generate signed URL');
+      return res.code(500).send({ success: false, error: 'Failed to generate signed URL' });
+    }
+  });
+}
+
 // Jobs routes are now in routes/jobs.ts
 
 // GET /v1/me/usage
@@ -825,9 +1028,10 @@ async function start() {
       }
     }
     
-    // Register routes after redis is initialized
-    // Note: Swagger is already registered above, so it will capture these routes via onRoute hook
-    registerRoutes();
+    // Register all routes after Swagger is initialized
+    // Swagger will capture these routes via onRoute hook
+    registerTopLevelRoutes(); // Register routes that were at top level
+    registerRoutes(); // Register routes from route modules
     // Register job routes with current redis state
     registerJobRoutes(app, { captions: captionsQ, ad: adQ, color: colorQ, videoTransform: videoTransformQ }, redis, queueDepth, failuresTotal);
     
