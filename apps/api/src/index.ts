@@ -122,9 +122,10 @@ try {
   console.error(e);
   process.exit(1);
 }
-// Swagger (OpenAPI) docs for Fastify API
-app.register(fastifySwagger, {
-  mode: 'dynamic',
+
+// Swagger configuration (will be registered after routes)
+const swaggerConfig = {
+  mode: 'dynamic' as const,
   openapi: {
     info: { 
       title: 'Sinna API', 
@@ -147,22 +148,15 @@ app.register(fastifySwagger, {
     components: {
       securitySchemes: {
         ApiKeyAuth: {
-          type: 'apiKey',
+          type: 'apiKey' as const,
           name: 'x-api-key',
-          in: 'header',
+          in: 'header' as const,
           description: 'API key for authentication. Get your key from your account dashboard.'
         }
       }
     }
   }
-});
-app.register(fastifySwaggerUi, { 
-  routePrefix: '/api-docs',
-  uiConfig: { 
-    docExpansion: 'list',
-    persistAuthorization: true
-  }
-});
+};
 
 // CORS
 try {
@@ -827,6 +821,16 @@ async function start() {
     registerRoutes();
     // Register job routes with current redis state
     registerJobRoutes(app, { captions: captionsQ, ad: adQ, color: colorQ, videoTransform: videoTransformQ }, redis, queueDepth, failuresTotal);
+    
+    // Register Swagger AFTER all routes are registered (so it can scan them)
+    await app.register(fastifySwagger, swaggerConfig);
+    await app.register(fastifySwaggerUi, { 
+      routePrefix: '/api-docs',
+      uiConfig: { 
+        docExpansion: 'list',
+        persistAuthorization: true
+      }
+    });
     
     // Sanity check: print environment
     // eslint-disable-next-line no-console
