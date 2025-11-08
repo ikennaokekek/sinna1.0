@@ -23,7 +23,7 @@ import { hashKey } from './lib/auth';
 import { incrementAndGateUsage } from './lib/usage';
 import { isProduction } from './config/env';
 import { validateEnv } from '@sinna/types';
-import { AuthenticatedRequest, TenantState } from './types/index';
+import { AuthenticatedRequest, TenantState } from './types';
 import { registerWebhookRoutes } from './routes/webhooks';
 import { registerBillingRoutes } from './routes/billing';
 import { registerJobRoutes } from './routes/jobs';
