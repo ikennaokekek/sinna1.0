@@ -32,6 +32,21 @@ components:
         preset_id:
           type: string
           nullable: true
+          enum:
+            - everyday
+            - adhd
+            - autism
+            - low_vision
+            - color
+            - hoh
+            - cognitive
+            - motion
+            - blindness
+            - deaf
+            - color_blindness
+            - epilepsy_flash
+            - epilepsy_noise
+            - cognitive_load
           example: "everyday"
         result:
           type: object
@@ -82,7 +97,22 @@ paths:
                   example: "https://example.com/video.mp4"
                 preset_id:
                   type: string
-                  description: Optional preset to influence processing behaviour
+                  description: Optional preset to influence processing behaviour. Supports video transformation for accessibility needs.
+                  enum:
+                    - everyday
+                    - adhd
+                    - autism
+                    - low_vision
+                    - color
+                    - hoh
+                    - cognitive
+                    - motion
+                    - blindness
+                    - deaf
+                    - color_blindness
+                    - epilepsy_flash
+                    - epilepsy_noise
+                    - cognitive_load
                   example: "everyday"
             examples:
               default:
@@ -90,10 +120,25 @@ paths:
                 value:
                   source_url: "https://example.com/video.mp4"
               withPreset:
-                summary: With preset
+                summary: With preset (everyday)
                 value:
                   source_url: "https://example.com/video.mp4"
                   preset_id: "everyday"
+              withVideoTransform:
+                summary: With video transformation preset (color_blindness)
+                value:
+                  source_url: "https://example.com/video.mp4"
+                  preset_id: "color_blindness"
+              epilepsyPreset:
+                summary: Epilepsy-safe preset
+                value:
+                  source_url: "https://example.com/video.mp4"
+                  preset_id: "epilepsy_flash"
+              blindnessPreset:
+                summary: Blindness preset (audio description)
+                value:
+                  source_url: "https://example.com/video.mp4"
+                  preset_id: "blindness"
       responses:
         '201':
           description: Job created

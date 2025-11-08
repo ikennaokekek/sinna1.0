@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Success - SINNA</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 500px;
+            margin: 20px;
+        }
+        .success-icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #2d3748;
+            margin-bottom: 20px;
+            font-size: 2.5em;
+        }
+        .message {
+            color: #4a5568;
+            font-size: 1.2em;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+        .api-key {
+            background: #f7fafc;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 14px;
+            word-break: break-all;
+        }
+        .instructions {
+            background: #edf2f7;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #2d3748;
+        }
+        .instructions ol {
+            color: #4a5568;
+            line-height: 1.6;
+        }
+        .btn {
+            background: #667eea;
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            margin: 10px;
+            transition: background 0.3s;
+        }
+        .btn:hover {
+            background: #5a67d8;
+        }
+        .loading {
+            color: #667eea;
+            font-style: italic;
+        }
+        .success {
+            color: #38a169;
+        }
+        .error {
+            color: #e53e3e;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="success-icon">🎉</div>
+        <h1>Payment Successful!</h1>
+        <div class="message">
+            Welcome to SINNA! Your subscription is now active.
+        </div>
+        
+        <div class="api-key" id="apiKeyContainer">
+            <div class="loading">Generating your API key...</div>
+        </div>
+        
+        <div class="instructions">
+            <h3>🚀 Getting Started:</h3>
+            <ol>
+                <li>Your API key is being generated and will appear above</li>
+                <li>Check your email for the official API key</li>
+                <li>Use the API key in the <code>X-API-Key</code> header</li>
+                <li>Base URL: <code>https://sinna1-0.onrender.com</code></li>
+                <li>Start building amazing applications!</li>
+            </ol>
+        </div>
+        
+        <a href="https://sinna1-0.onrender.com" class="btn">Visit API</a>
+        <button onclick="generateApiKey()" class="btn">Generate API Key</button>
+    </div>
+
+    <script>
+        // Auto-generate API key when page loads
+        window.onload = function() {
+            console.log('Success page loaded, generating API key...');
+            generateApiKey();
+        };
+        
+        // Also try on DOMContentLoaded as backup
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM loaded, generating API key...');
+            generateApiKey();
+        });
+
+        async function generateApiKey() {
+            console.log('generateApiKey function called');
+            const container = document.getElementById('apiKeyContainer');
+            if (!container) {
+                console.error('API key container not found!');
+                return;
+            }
+            container.innerHTML = '<div class="loading">Generating your API key...</div>';
+            
+            try {
+                console.log('Making API call to localhost:5001...');
+                const response = await fetch('http://localhost:5001/test-email', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        to: 'ikennaokeke1996@gmail.com',
+                        subject: '🎉 Payment Complete - Your API Key!',
+                        text: 'Congratulations! Your payment was processed successfully.\n\nHere is your production-ready API key:'
+                    })
+                });
+                
+                console.log('API response received:', response.status);
+                const data = await response.json();
+                console.log('API response data:', data);
+                
+                if (data.success) {
+                    console.log('API key generated successfully:', data.apiKey);
+                    container.innerHTML = `
+                        <strong>Your API Key:</strong><br>
+                        ${data.apiKey}
+                        <br><br>
+                        <small class="success">✅ Email sent to ikennaokeke1996@gmail.com</small>
+                    `;
+                } else {
+                    console.error('API returned error:', data);
+                    container.innerHTML = `
+                        <div class="error">
+                            Error generating API key. Please try again.
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Error in generateApiKey:', error);
+                container.innerHTML = `
+                    <div class="error">
+                        Error: ${error.message}<br>
+                        <small>Make sure the API server is running on localhost:5001</small>
+                        <br><br>
+                        <button onclick="generateApiKey()" class="btn">Try Again</button>
+                    </div>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>

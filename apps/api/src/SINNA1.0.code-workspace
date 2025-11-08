@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "SINNA1.0",
+			"path": "../../.."
+		},
+		{
+			"name": "sinna-ops",
+			"path": "../../../../../Downloads/sinna-ops"
+		}
+	],
+	"settings": {}
+}

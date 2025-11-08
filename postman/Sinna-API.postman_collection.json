@@ -89,7 +89,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/monitoring/system",
+              "raw": "{{BASE_URL}}/v1/monitoring/system",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "monitoring", "system"]
             },
@@ -118,7 +118,7 @@
               "raw": "{\n  \"audioUrl\": \"https://example.com/audio.mp3\",\n  \"language\": \"en\",\n  \"includeWordTimestamps\": true,\n  \"provider\": \"auto\"\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/audio/transcribe",
+              "raw": "{{BASE_URL}}/v1/audio/transcribe",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "audio", "transcribe"]
             },
@@ -141,7 +141,7 @@
               "raw": "{\n  \"audioUrl\": \"https://example.com/audio.mp3\",\n  \"language\": \"en\",\n  \"format\": \"vtt\",\n  \"includeWordTimestamps\": true\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/audio/generate-subtitles",
+              "raw": "{{BASE_URL}}/v1/audio/generate-subtitles",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "audio", "generate-subtitles"]
             },
@@ -164,7 +164,7 @@
               "raw": "{\n  \"text\": \"Hello, this is a test of the text-to-speech service.\",\n  \"voice\": \"nova\",\n  \"speed\": 1.0,\n  \"format\": \"mp3\",\n  \"quality\": \"high\"\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/audio/text-to-speech",
+              "raw": "{{BASE_URL}}/v1/audio/text-to-speech",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "audio", "text-to-speech"]
             },
@@ -187,7 +187,7 @@
               "raw": "{\n  \"descriptions\": [\n    {\n      \"time\": 10.5,\n      \"text\": \"A woman walks across a busy street\"\n    },\n    {\n      \"time\": 25.0,\n      \"text\": \"The camera pans to show a cityscape\"\n    }\n  ],\n  \"voice\": \"nova\",\n  \"speed\": 0.9,\n  \"quality\": \"high\"\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/audio/audio-description",
+              "raw": "{{BASE_URL}}/v1/audio/audio-description",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "audio", "audio-description"]
             },
@@ -201,7 +201,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/audio/voices",
+              "raw": "{{BASE_URL}}/v1/audio/voices",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "audio", "voices"]
             },
@@ -230,7 +230,7 @@
               "raw": "{\n  \"videoUrl\": \"https://example.com/video.mp4\",\n  \"frameCount\": 5,\n  \"startTime\": 10,\n  \"interval\": 30\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/accessibility/color-analysis",
+              "raw": "{{BASE_URL}}/v1/accessibility/color-analysis",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "accessibility", "color-analysis"]
             },
@@ -253,7 +253,7 @@
               "raw": "{\n  \"videoUrl\": \"https://example.com/video.mp4\",\n  \"checkContrast\": true,\n  \"checkColorBlindness\": true,\n  \"checkMotionSensitivity\": false\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/accessibility/audit",
+              "raw": "{{BASE_URL}}/v1/accessibility/audit",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "accessibility", "audit"]
             },
@@ -267,7 +267,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/accessibility/guidelines",
+              "raw": "{{BASE_URL}}/v1/accessibility/guidelines",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "accessibility", "guidelines"]
             },
@@ -296,7 +296,7 @@
               "raw": "{\n  \"videoUrl\": \"https://example.com/video.mp4\",\n  \"language\": \"en\",\n  \"format\": \"vtt\",\n  \"webhookUrl\": \"https://your-app.com/webhook\"\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/jobs/subtitles",
+              "raw": "{{BASE_URL}}/v1/jobs/subtitles",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "jobs", "subtitles"]
             },
@@ -319,7 +319,7 @@
               "raw": "{\n  \"videoUrl\": \"https://example.com/video.mp4\",\n  \"language\": \"en\",\n  \"webhookUrl\": \"https://your-app.com/webhook\"\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/jobs/audio-description",
+              "raw": "{{BASE_URL}}/v1/jobs/audio-description",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "jobs", "audio-description"]
             },
@@ -333,7 +333,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/jobs/subtitle-generation/{{JOB_ID}}",
+              "raw": "{{BASE_URL}}/v1/jobs/subtitle-generation/{{JOB_ID}}",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "jobs", "subtitle-generation", "{{JOB_ID}}"]
             },
@@ -347,7 +347,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/jobs/stats",
+              "raw": "{{BASE_URL}}/v1/jobs/stats",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "jobs", "stats"]
             },
@@ -376,7 +376,7 @@
               "raw": "{\n  \"fileName\": \"video-subtitle.vtt\",\n  \"contentType\": \"text/vtt\",\n  \"folder\": \"subtitles\",\n  \"language\": \"en\"\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/storage/upload-url",
+              "raw": "{{BASE_URL}}/v1/storage/upload-url",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "storage", "upload-url"]
             },
@@ -399,7 +399,7 @@
               "raw": "{\n  \"key\": \"subtitles/tenant123/1234567890-video-subtitle.vtt\",\n  \"expiresIn\": 3600\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/storage/download-url",
+              "raw": "{{BASE_URL}}/v1/storage/download-url",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "storage", "download-url"]
             },
@@ -419,11 +419,11 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/billing/plans",
+              "raw": "{{BASE_URL}}/v1/billing/plans",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "billing", "plans"]
             },
-            "description": "Get available subscription plans (Standard $1500, Gold $3000)"
+            "description": "Get available subscription plans (Standard $2000, Pro $3000)"
           },
           "response": []
         },
@@ -442,7 +442,7 @@
               "raw": "{\n  \"email\": \"user@example.com\",\n  \"name\": \"John Doe\"\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/billing/customer",
+              "raw": "{{BASE_URL}}/v1/billing/customer",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "billing", "customer"]
             },
@@ -465,7 +465,7 @@
               "raw": "{\n  \"planId\": \"standard\",\n  \"successUrl\": \"https://your-app.com/success\",\n  \"cancelUrl\": \"https://your-app.com/cancel\"\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/billing/checkout",
+              "raw": "{{BASE_URL}}/v1/billing/checkout",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "billing", "checkout"]
             },
@@ -479,7 +479,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/billing/subscription",
+              "raw": "{{BASE_URL}}/v1/billing/subscription",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "billing", "subscription"]
             },
@@ -493,7 +493,7 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/billing/portal",
+              "raw": "{{BASE_URL}}/v1/billing/portal",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "billing", "portal"]
             },
@@ -516,7 +516,7 @@
               "raw": "{\n  \"immediately\": false\n}"
             },
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/billing/cancel",
+              "raw": "{{BASE_URL}}/v1/billing/cancel",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "billing", "cancel"]
             },
@@ -530,7 +530,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{BASE_URL}}/api/v1/billing/history?limit=10",
+              "raw": "{{BASE_URL}}/v1/billing/history?limit=10",
               "host": ["{{BASE_URL}}"],
               "path": ["api", "v1", "billing", "history"],
               "query": [

@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  BASE_URL: https://sinna1-0.onrender.com, http://localhost:4000
+  DATABASE_URL: postgresql://sinna1_0_user:g8vB4HBdqjK3izSoG0ZJz7D4NyFbsjhz@dpg-d3htvb33fgac73a3ttj0-a.frankfurt-postgres.render.com/sinna1_0
+  REDIS_URL: rediss://default:AWMYAAIncDFjZGEwYTJlMGJlMjU0YzkzYjdkYjZmYmNhYmViM2VlNnAxMjUzNjg@good-owl-25368.upstash.io:6379
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - name: Install deps
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Build
+        run: pnpm build
+
+      - name: Install clients (jq, psql)
+        run: sudo apt-get update && sudo apt-get install -y jq postgresql-client
+
+      - name: Run DB migrations
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: pnpm -C apps/api run migrate
+
+      - name: Seed test tenant and API key
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: |
+          set -e
+          H=$(printf YOUR_TEST_KEY | sha256sum | awk '{print $1}')
+          TENANT_ID=$(psql "$DATABASE_URL" -At -c "insert into tenants(name, active, plan) values ('ci', true, 'standard') returning id;")
+          psql "$DATABASE_URL" -c "insert into api_keys(key_hash, tenant_id) values ('$H', '$TENANT_ID');"
+
+      - name: Start API
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          REDIS_URL: ${{ env.REDIS_URL }}
+          STATUS_PAGE_URL: https://sinna.betteruptime.com/
+        run: nohup node apps/api/dist/index.js & echo $! > api.pid
+
+      - name: Start dummy workers for queues
+        env:
+          REDIS_URL: ${{ env.REDIS_URL }}
+        run: |
+          nohup node -e "const { Worker } = require('bullmq'); const IORedis = require('ioredis'); const c = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379'); const mk=q=>new Worker(q, async()=>({ok:true}), { connection: c }); mk('captions'); mk('ad'); mk('color'); setInterval(()=>{}, 1<<30);" & echo $! > worker.pid
+
+      - name: Real flow (create → poll until completed)
+        run: |
+          set -e
+          BASE=${{ env.BASE_URL }}
+          curl -sSf $BASE/health
+          JOB=$(curl -sSf -X POST $BASE/v1/jobs \
+            -H 'x-api-key: YOUR_TEST_KEY' \
+            -H 'content-type: application/json' \
+            -d '{"source_url":"https://example.com/video.mp4","preset_id":"everyday"}')
+          echo "$JOB"
+          id=$(echo "$JOB" | jq -r .data.id)
+          for i in {1..60}; do
+            sleep 2
+            S=$(curl -sSf $BASE/v1/jobs/$id | jq -r 'if ([.data.status.captions,.data.status.ad,.data.status.color] | all(. == "completed")) then "completed" else "pending" end')
+            if [ "$S" = "completed" ]; then exit 0; fi
+          done
+          echo "job did not complete"; exit 1
+
+      - name: Stop API and workers
+        if: always()
+        run: |
+          if [ -f api.pid ]; then PID=$(cat api.pid); if kill -0 $PID 2>/dev/null; then kill -9 $PID; fi; fi
+          if [ -f worker.pid ]; then PID=$(cat worker.pid); if kill -0 $PID 2>/dev/null; then kill -9 $PID; fi; fi
+
+      - name: Unit tests
+        run: pnpm test:unit --if-present
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Deploy to Render (notification)
+        run: |
+          # Render auto-deploys from GitHub when connected via Blueprint
+          # This step just confirms the build passed
+          echo "✅ Build passed - Render will auto-deploy from main branch"
+          echo "Note: Ensure Render service is connected to this GitHub repo"
+          
+          # Render automatically deploys when changes are pushed to main branch
+          # No manual deployment step needed if Render is connected to this repo
+
+      - name: Run unit tests (root)
+        run: pnpm test:unit --if-present
+
+      - name: Run api tests
+        run: pnpm -C apps/api test --if-present
+
+

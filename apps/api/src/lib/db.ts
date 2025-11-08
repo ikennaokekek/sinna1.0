@@ -12,8 +12,22 @@ export function getDb(): DatabaseClients {
   if (!connectionString) {
     throw new Error('DATABASE_URL is required');
   }
-  const ssl = process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined as any;
-  const pool = new Pool({ connectionString, ssl, max: 10, idleTimeoutMillis: 30_000 });
+  const ssl = process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined;
+  // Optimized connection pooling:
+  // - max: Maximum number of clients in the pool (10 is good for most apps)
+  // - min: Minimum number of clients to keep in the pool (2 for better performance)
+  // - idleTimeoutMillis: Close idle clients after 30 seconds
+  // - connectionTimeoutMillis: Wait 5 seconds for connection
+  // - maxUses: Close connections after 7500 uses to prevent memory leaks
+  const pool = new Pool({
+    connectionString,
+    ssl,
+    max: 10,
+    min: 2,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5000,
+    maxUses: 7500,
+  });
   cached = { pool };
   return cached;
 }

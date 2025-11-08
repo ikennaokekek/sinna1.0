@@ -56,7 +56,7 @@ Run the "Health Check" request first to verify your setup.
 - **File Deletion** - Remove files from storage
 
 ### 💳 Billing & Subscriptions
-- **Plans** - View subscription options ($1500/$3000 tiers)
+- **Plans** - View subscription options ($2000/$3000 tiers)
 - **Checkout** - Create payment sessions
 - **Subscription Status** - Check current plan and usage
 - **Customer Portal** - Self-service billing

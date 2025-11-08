@@ -12,6 +12,7 @@ import { uploadToR2 } from './lib/r2';
 import IORedis from 'ioredis';
 import { Pool } from 'pg';
 import OpenAI from 'openai';
+import { createVideoTransformWorker } from './videoTransformWorker';
 
 async function startWorkers() {
   const redisUrl = process.env.REDIS_URL;
@@ -42,8 +43,8 @@ async function startWorkers() {
     console.warn('REDIS_URL not set; worker will idle');
   }
 
-  // Process the three API queues (must match API queue names)
-  const qNames = ['captions', 'ad', 'color'] as const;
+  // Process the four API queues (captions, ad, color, video-transform)
+  const qNames = ['captions', 'ad', 'color', 'video-transform'] as const;
   const queues = connection ? qNames.map((n) => new Queue(n, { connection })) : [];
   const events = connection ? qNames.map((n) => new QueueEvents(n, { connection })) : [];
 
@@ -132,16 +133,26 @@ async function startWorkers() {
       console.log('🎬 Captions job started:', job.id, job.data);
       const { videoUrl, language = 'en', tenantId } = job.data || {};
       if (!videoUrl) {
-        console.log('❌ Missing videoUrl in job data');
+        console.error('❌ Missing videoUrl in job data');
         return { ok: false, error: 'missing_video_url' };
       }
       console.log('🎯 Processing captions for:', videoUrl);
-      const { segments } = await transcribeWithAssemblyAI(videoUrl, { language });
-      const vtt = toVtt(segments);
-      const key = `artifacts/${tenantId || 'anon'}/${job.id}.vtt`;
-      await uploadToR2(key, Buffer.from(vtt, 'utf-8'), 'text/vtt');
-      console.log('✅ Captions completed:', key);
-      return { ok: true, artifactKey: key, tenantId };
+      try {
+        const { segments } = await transcribeWithAssemblyAI(videoUrl, { language });
+        const vtt = toVtt(segments);
+        const key = `artifacts/${tenantId || 'anon'}/${job.id}.vtt`;
+        try {
+          await uploadToR2(key, Buffer.from(vtt, 'utf-8'), 'text/vtt');
+          console.log('✅ Captions completed:', key);
+          return { ok: true, artifactKey: key, tenantId };
+        } catch (error) {
+          console.error('Failed to upload captions to R2:', error instanceof Error ? error.message : String(error));
+          throw error; // Re-throw to mark job as failed
+        }
+      } catch (error) {
+        console.error('Captions transcription failed:', error instanceof Error ? error.message : String(error));
+        throw error; // Re-throw to mark job as failed
+      }
     }, { connection });
 
     // ad (TTS)
@@ -165,21 +176,32 @@ async function startWorkers() {
           if (arrayBuffer) {
             body = Buffer.from(new Uint8Array(arrayBuffer as ArrayBuffer));
           }
-        } catch {
-          // keep stub body
+        } catch (error) {
+          console.error('OpenAI TTS failed, using fallback:', error instanceof Error ? error.message : String(error));
+          // Keep stub body as fallback
         }
+      } else {
+        console.warn('OpenAI API key not configured, using mock audio');
       }
       const key = `artifacts/${tenantId || 'anon'}/${job.id}.mp3`;
-      await uploadToR2(key, body, ct);
-      console.log('✅ AD completed:', key);
-      return { ok: true, artifactKey: key, tenantId };
+      try {
+        await uploadToR2(key, body, ct);
+        console.log('✅ AD completed:', key);
+        return { ok: true, artifactKey: key, tenantId };
+      } catch (error) {
+        console.error('Failed to upload AD to R2:', error instanceof Error ? error.message : String(error));
+        throw error; // Re-throw to mark job as failed
+      }
     }, { connection });
 
     // color (Cloudinary/ffmpeg real implementation)
     new Worker('color', async (job) => {
       console.log('🎨 Color job started:', job.id, job.data);
       const { videoUrl, tenantId } = job.data || {};
-      if (!videoUrl) return { ok: false, error: 'missing_video_url' };
+      if (!videoUrl) {
+        console.error('❌ Missing videoUrl in job data');
+        return { ok: false, error: 'missing_video_url' };
+      }
       
       let summary: any = { dominant_colors: [], contrast_ratio: 4.5 };
       
@@ -187,49 +209,109 @@ async function startWorkers() {
         // Use Cloudinary for video analysis if CLOUDINARY_URL is available
         const cloudinaryUrl = process.env.CLOUDINARY_URL;
         if (cloudinaryUrl) {
-          // Extract cloud name from CLOUDINARY_URL
-          const match = cloudinaryUrl.match(/cloudinary:\/\/\d+:[\w-]+@([\w-]+)/);
-          const cloudName = match?.[1];
-          
-          if (cloudName) {
-            // Use Cloudinary's video analysis API
-            const analysisUrl = `https://api.cloudinary.com/v1_1/${cloudName}/video/analyze`;
-            const response = await fetch(analysisUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Basic ${Buffer.from(cloudinaryUrl.split('://')[1].split('@')[0]).toString('base64')}`
-              },
-              body: JSON.stringify({
-                public_id: `temp_${Date.now()}`,
-                file: videoUrl,
-                analysis: {
-                  colors: true,
-                  accessibility: true
-                }
-              })
-            });
+          // Extract credentials from CLOUDINARY_URL: cloudinary://api_key:api_secret@cloud_name
+          const match = cloudinaryUrl.match(/cloudinary:\/\/(\d+):([\w-]+)@([\w-]+)/);
+          if (match) {
+            const [, apiKey, apiSecret, cloudName] = match;
             
-            if (response.ok) {
-              const data = await response.json();
-              summary = {
-                dominant_colors: data.colors?.dominant || [],
-                contrast_ratio: data.accessibility?.contrast_ratio || 4.5,
-                accessibility_score: data.accessibility?.score || 0
-              };
+            // Cloudinary approach: Upload video URL to Cloudinary and extract frame for analysis
+            try {
+              // Upload video from remote URL to Cloudinary
+              const uploadUrl = `https://api.cloudinary.com/v1_1/${cloudName}/video/upload`;
+              
+              // Cloudinary uses unsigned uploads with API key/secret in URL params
+              // Or we can use signed uploads - for now, use unsigned with explicit auth
+              const formData = new URLSearchParams();
+              formData.append('file', videoUrl);
+              formData.append('resource_type', 'video');
+              formData.append('api_key', apiKey);
+              formData.append('timestamp', Math.floor(Date.now() / 1000).toString());
+              
+              // Generate signature for upload
+              const crypto = await import('crypto');
+              const signatureString = formData.toString();
+              const signature = crypto.createHash('sha1').update(signatureString + apiSecret).digest('hex');
+              formData.append('signature', signature);
+              
+              const uploadResponse = await fetch(uploadUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: formData.toString()
+              });
+              
+              if (uploadResponse.ok) {
+                const uploadData = await uploadResponse.json();
+                
+                // Extract a frame from the video for color analysis
+                // Cloudinary can generate a frame automatically using transformations
+                const frameUrl = uploadData.secure_url?.replace(/\.(mp4|webm|mov)$/, '.jpg') || 
+                                `https://res.cloudinary.com/${cloudName}/video/upload/so_0/${uploadData.public_id}.jpg`;
+                
+                // Analyze the frame image for colors
+                const analysisUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/analyze`;
+                const analysisParams = new URLSearchParams();
+                analysisParams.append('url', frameUrl);
+                analysisParams.append('colors', 'true');
+                analysisParams.append('api_key', apiKey);
+                analysisParams.append('timestamp', Math.floor(Date.now() / 1000).toString());
+                
+                const analysisSignature = crypto.createHash('sha1')
+                  .update(analysisParams.toString() + apiSecret)
+                  .digest('hex');
+                analysisParams.append('signature', analysisSignature);
+                
+                const analysisResponse = await fetch(`${analysisUrl}?${analysisParams.toString()}`, {
+                  method: 'GET'
+                });
+                
+                if (analysisResponse.ok) {
+                  const analysisData = await analysisResponse.json();
+                  summary = {
+                    dominant_colors: analysisData.colors?.dominant || [],
+                    contrast_ratio: analysisData.accessibility?.contrast_ratio || 4.5,
+                    accessibility_score: analysisData.accessibility?.score || 0,
+                    cloudinary_public_id: uploadData.public_id,
+                    video_duration: uploadData.duration
+                  };
+                  console.log('✅ Cloudinary analysis completed');
+                } else {
+                  console.warn('Cloudinary image analysis failed, using default summary');
+                }
+              } else {
+                const errorText = await uploadResponse.text().catch(() => '');
+                console.warn('Cloudinary upload failed:', { status: uploadResponse.status, error: errorText });
+              }
+            } catch (cloudinaryError) {
+              console.warn('Cloudinary analysis attempt failed:', cloudinaryError instanceof Error ? cloudinaryError.message : String(cloudinaryError));
+              // Fall back to default summary
             }
+          } else {
+            console.warn('CLOUDINARY_URL format invalid, expected: cloudinary://api_key:api_secret@cloud_name');
           }
+        } else {
+          console.warn('CLOUDINARY_URL not configured, using default summary');
         }
       } catch (error) {
-        console.warn('Cloudinary analysis failed, using fallback:', error);
+        console.error('Cloudinary analysis failed, using fallback:', error instanceof Error ? error.message : String(error));
         // Keep default summary
       }
       
       const key = `artifacts/${tenantId || 'anon'}/${job.id}.json`;
-      await uploadToR2(key, Buffer.from(JSON.stringify(summary)), 'application/json');
-      console.log('✅ Color completed:', key);
-      return { ok: true, artifactKey: key, tenantId };
+      try {
+        await uploadToR2(key, Buffer.from(JSON.stringify(summary)), 'application/json');
+        console.log('✅ Color completed:', key);
+        return { ok: true, artifactKey: key, tenantId };
+      } catch (error) {
+        console.error('Failed to upload color analysis to R2:', error instanceof Error ? error.message : String(error));
+        throw error; // Re-throw to mark job as failed
+      }
     }, { connection });
+
+    // video-transform worker
+    createVideoTransformWorker(connection);
+    console.log('✅ Video transform worker registered');
   }
 
   for (const ev of events) {

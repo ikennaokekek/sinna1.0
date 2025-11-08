@@ -37,9 +37,23 @@ PROVIDER_CAPTIONS_VOD=whisper          # batch fallback
 ```bash
 STRIPE_SECRET_KEY=sk_live_...
 STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_STANDARD_PRICE_ID=price_...
+WEBHOOK_SIGNING_SECRET=whsec_...
 ```
 
-### CHECKPOINT 6 - Monitoring & Analytics
+### CHECKPOINT 6 - Email Service (Choose One)
+```bash
+# Option 1: Resend (Recommended)
+RESEND_API_KEY=re_...
+
+# Option 2: SendGrid (Alternative)
+SENDGRID_API_KEY=SG...
+
+# Email Configuration
+NOTIFY_FROM_EMAIL=noreply@yourdomain.com
+```
+
+### CHECKPOINT 7 - Monitoring & Analytics
 ```bash
 SENTRY_DSN=https://<public_key>@sentry.io/<project_id>
 GRAFANA_PROM_PUSH_URL=  # Optional
