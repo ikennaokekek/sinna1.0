@@ -782,54 +782,8 @@ function registerTopLevelRoutes(): void {
 
 // Jobs routes are now in routes/jobs.ts
 
-// GET /v1/me/usage
-app.get('/v1/me/usage', {
-  schema: {
-    description: 'Get current usage statistics for the billing period',
-    tags: ['Usage'],
-    security: [{ ApiKeyAuth: [] }],
-    response: {
-      200: {
-        type: 'object',
-        properties: {
-          success: { type: 'boolean' },
-          data: {
-            type: 'object',
-            properties: {
-              period_start: { type: 'string', format: 'date-time' },
-              period_end: { type: 'string', format: 'date-time' },
-              requests: { type: 'number' },
-              minutes: { type: 'number' },
-              jobs: { type: 'number' },
-              storage: { type: 'number' },
-              cap: { type: 'number' }
-            }
-          }
-        }
-      },
-      401: {
-        type: 'object',
-        properties: {
-          success: { type: 'boolean' },
-          error: { type: 'string' }
-        }
-      }
-    }
-  }
-}, async (req, res) => {
-  const tenantId = (req as AuthenticatedRequest).tenantId;
-  if (!tenantId) {
-    return res.code(401).send({ success: false, error: 'unauthorized' });
-  }
-  const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  const state = tenants.get(tenantId) || {
-    active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
-});
+// Note: Routes like /v1/me/usage and /v1/files/:id:sign are now registered via registerTopLevelRoutes()
+// in start() function after Swagger is initialized, so they appear in Swagger documentation.
 
 // Webhook routes are now in routes/webhooks.ts
 
