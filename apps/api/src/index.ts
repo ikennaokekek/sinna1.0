@@ -825,8 +825,19 @@ async function start() {
       }
     }
     
-    // Register routes after redis is initialized
-    // Note: Swagger is already registered above, so it will capture these routes via onRoute hook
+    // Register Swagger BEFORE routes (so it can hook into route registration)
+    // IMPORTANT: Must await to ensure Swagger is fully initialized before routes register
+    await app.register(fastifySwagger, swaggerConfig);
+    await app.register(fastifySwaggerUi, { 
+      routePrefix: '/api-docs',
+      uiConfig: { 
+        docExpansion: 'list',
+        persistAuthorization: true
+      }
+    });
+    
+    // Register routes after Swagger is initialized
+    // Swagger will capture these routes via onRoute hook
     registerRoutes();
     // Register job routes with current redis state
     registerJobRoutes(app, { captions: captionsQ, ad: adQ, color: colorQ, videoTransform: videoTransformQ }, redis, queueDepth, failuresTotal);
