@@ -123,10 +123,9 @@ try {
   process.exit(1);
 }
 
-// Swagger (OpenAPI) docs for Fastify API
-// IMPORTANT: Swagger must be registered BEFORE routes so it can hook into route registration
-app.register(fastifySwagger, {
-  mode: 'dynamic',
+// Swagger configuration (will be registered in start() function before routes)
+const swaggerConfig = {
+  mode: 'dynamic' as const,
   openapi: {
     info: { 
       title: 'Sinna API', 
@@ -157,14 +156,7 @@ app.register(fastifySwagger, {
       }
     }
   }
-});
-app.register(fastifySwaggerUi, { 
-  routePrefix: '/api-docs',
-  uiConfig: { 
-    docExpansion: 'list',
-    persistAuthorization: true
-  }
-});
+};
 
 // CORS
 try {
