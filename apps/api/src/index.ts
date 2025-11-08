@@ -124,6 +124,7 @@ try {
 }
 // Swagger (OpenAPI) docs for Fastify API
 app.register(fastifySwagger, {
+  mode: 'dynamic',
   openapi: {
     info: { 
       title: 'Sinna API', 
