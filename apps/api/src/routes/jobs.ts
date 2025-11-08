@@ -198,9 +198,9 @@ export function registerJobRoutes(
       });
 
       // Add video transformation job if preset requires it
-      let videoTransformJob: { id: string | number | undefined } | null = null;
+      let videoTransformJobId: string | undefined = undefined;
       if (presetCfg.videoTransform && presetCfg.videoTransformConfig) {
-        videoTransformJob = await queues.videoTransform.add('transform-video', {
+        const videoTransformJob = await queues.videoTransform.add('transform-video', {
           videoUrl: body.source_url,
           tenantId,
           presetId: preset,
@@ -209,17 +209,19 @@ export function registerJobRoutes(
           adJobId: adJob.id,
           captionJobId: captionJob.id,
         }, {
-          dependsOn: colorJob.id,
+          // Note: BullMQ doesn't support dependsOn in JobsOptions, jobs run independently
+          // Dependencies are handled by checking job status in the worker
         });
+        videoTransformJobId = videoTransformJob.id ? String(videoTransformJob.id) : undefined;
       }
 
       const jobBundle: JobBundle = {
-        id: captionJob.id!,
+        id: String(captionJob.id!),
         steps: {
-          captions: captionJob.id!,
-          ad: adJob.id!,
-          color: colorJob.id!,
-          ...(videoTransformJob ? { videoTransform: videoTransformJob.id! } : {}),
+          captions: String(captionJob.id!),
+          ad: String(adJob.id!),
+          color: String(colorJob.id!),
+          ...(videoTransformJobId ? { videoTransform: videoTransformJobId } : {}),
         },
         preset,
       };
@@ -415,24 +417,34 @@ export function registerJobRoutes(
         bundle.steps.videoTransform ? queues.videoTransform.getJob(bundle.steps.videoTransform) : Promise.resolve(null),
       ]);
 
+      // Check job completion status (await promises)
+      const cCompleted = c ? await c.isCompleted() : false;
+      const cFailed = c ? !!c.failedReason : false;
+      const aCompleted = a ? await a.isCompleted() : false;
+      const aFailed = a ? !!a.failedReason : false;
+      const clCompleted = cl ? await cl.isCompleted() : false;
+      const clFailed = cl ? !!cl.failedReason : false;
+      const vtCompleted = vt ? await vt.isCompleted() : false;
+      const vtFailed = vt ? !!vt.failedReason : false;
+
       const status: JobStatusResponse['steps'] = {
         captions: {
-          status: c?.isCompleted() ? 'completed' : c?.failedReason ? 'failed' : 'pending',
-          artifactKey: c?.isCompleted() ? (c.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
+          status: cCompleted ? 'completed' : cFailed ? 'failed' : 'pending',
+          artifactKey: cCompleted && c ? (c.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
         },
         ad: {
-          status: a?.isCompleted() ? 'completed' : a?.failedReason ? 'failed' : 'pending',
-          artifactKey: a?.isCompleted() ? (a.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
+          status: aCompleted ? 'completed' : aFailed ? 'failed' : 'pending',
+          artifactKey: aCompleted && a ? (a.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
         },
         color: {
-          status: cl?.isCompleted() ? 'completed' : cl?.failedReason ? 'failed' : 'pending',
-          artifactKey: cl?.isCompleted() ? (cl.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
+          status: clCompleted ? 'completed' : clFailed ? 'failed' : 'pending',
+          artifactKey: clCompleted && cl ? (cl.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
         },
         ...(vt ? {
           videoTransform: {
-            status: vt.isCompleted() ? 'completed' : vt.failedReason ? 'failed' : 'pending',
-            artifactKey: vt.isCompleted() ? (vt.returnvalue as { artifactKey?: string; cloudinaryUrl?: string })?.artifactKey : undefined,
-            cloudinaryUrl: vt.isCompleted() ? (vt.returnvalue as { artifactKey?: string; cloudinaryUrl?: string })?.cloudinaryUrl : undefined,
+            status: vtCompleted ? 'completed' : vtFailed ? 'failed' : 'pending',
+            artifactKey: vtCompleted ? (vt.returnvalue as { artifactKey?: string; cloudinaryUrl?: string })?.artifactKey : undefined,
+            cloudinaryUrl: vtCompleted ? (vt.returnvalue as { artifactKey?: string; cloudinaryUrl?: string })?.cloudinaryUrl : undefined,
           },
         } : {}),
       };
@@ -440,29 +452,29 @@ export function registerJobRoutes(
       // Determine overall status
       const overallStatus: JobStatusResponse['status'] = 
         (status.videoTransform?.status === 'completed' || !status.videoTransform) &&
-        status.captions.status === 'completed' &&
-        status.ad.status === 'completed' &&
-        status.color.status === 'completed'
+        status.captions?.status === 'completed' &&
+        status.ad?.status === 'completed' &&
+        status.color?.status === 'completed'
           ? 'completed'
-          : status.captions.status === 'failed' || status.ad.status === 'failed' || status.color.status === 'failed' || status.videoTransform?.status === 'failed'
+          : status.captions?.status === 'failed' || status.ad?.status === 'failed' || status.color?.status === 'failed' || status.videoTransform?.status === 'failed'
           ? 'failed'
-          : status.captions.status === 'pending' && status.ad.status === 'pending' && status.color.status === 'pending' && (!status.videoTransform || status.videoTransform.status === 'pending')
+          : status.captions?.status === 'pending' && status.ad?.status === 'pending' && status.color?.status === 'pending' && (!status.videoTransform || status.videoTransform.status === 'pending')
           ? 'pending'
           : 'processing';
 
       // metrics
-      if (c?.failedReason || a?.failedReason || cl?.failedReason || vt?.failedReason) {
+      if (cFailed || aFailed || clFailed || vtFailed) {
         failuresTotal.labels({ type: 'job' }).inc();
       }
 
       // Generate signed URLs for completed artifacts
-      if (status.captions.status === 'completed' && status.captions.artifactKey) {
+      if (status.captions?.status === 'completed' && status.captions.artifactKey) {
         status.captions.url = await getSignedGetUrl(status.captions.artifactKey);
       }
-      if (status.ad.status === 'completed' && status.ad.artifactKey) {
+      if (status.ad?.status === 'completed' && status.ad.artifactKey) {
         status.ad.url = await getSignedGetUrl(status.ad.artifactKey);
       }
-      if (status.color.status === 'completed' && status.color.artifactKey) {
+      if (status.color?.status === 'completed' && status.color.artifactKey) {
         status.color.url = await getSignedGetUrl(status.color.artifactKey);
       }
       if (status.videoTransform?.status === 'completed' && status.videoTransform.artifactKey) {
