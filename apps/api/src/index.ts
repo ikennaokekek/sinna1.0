@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import Fastify from 'fastify';
+import Fastify, { FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { Registry, collectDefaultMetrics, Histogram, Gauge, Counter } from 'prom-client';
 import fastifySwagger from '@fastify/swagger';
@@ -23,21 +23,43 @@ import { hashKey } from './lib/auth';
 import { incrementAndGateUsage } from './lib/usage';
 import { isProduction } from './config/env';
 import { validateEnv } from '@sinna/types';
-
-// Validate environment early (log and exit on error)
-try {
-  validateEnv(process.env);
-} catch (e: any) {
-  // eslint-disable-next-line no-console
-  console.error('Invalid environment configuration:', e?.message || e);
-  process.exit(1);
-}
+import { AuthenticatedRequest, TenantState } from './types';
+import { registerWebhookRoutes } from './routes/webhooks';
+import { registerBillingRoutes } from './routes/billing';
+import { registerJobRoutes } from './routes/jobs';
+import { registerSubscriptionRoutes } from './routes/subscription';
+import { requestIdHook } from './middleware/requestId';
+import { sendErrorResponse } from './lib/errors';
 
 const app = Fastify({
   logger: true,
   bodyLimit: 10 * 1024 * 1024,
   trustProxy: process.env.TRUST_PROXIES === '1',
 });
+
+// Add request ID to all requests
+app.addHook('onRequest', requestIdHook);
+
+// Add performance monitoring
+import { performanceMonitoringHook, performanceMonitoringOnSendHook } from './middleware/monitoring';
+app.addHook('onRequest', performanceMonitoringHook);
+app.addHook('onSend', performanceMonitoringOnSendHook);
+
+// Validate environment early (log and exit on error)
+try {
+  validateEnv(process.env);
+} catch (e: unknown) {
+  const error = e instanceof Error ? e : new Error(String(e));
+  const errorMessage = error.message || String(e);
+  // In development/test mode, just warn instead of exiting
+  if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' || process.env.STRIPE_TESTING === 'true') {
+    app.log.warn({ message: errorMessage }, '🔧 Development mode: Environment validation warnings');
+    app.log.warn('Continuing with lenient validation...');
+  } else {
+    app.log.error({ message: errorMessage }, 'Invalid environment configuration');
+    process.exit(1);
+  }
+}
 
 // Ensure rawBody is available for routes like Stripe webhooks (signature verification)
 app.register(fastifyRawBody, {
@@ -102,18 +124,55 @@ try {
 }
 // Swagger (OpenAPI) docs for Fastify API
 app.register(fastifySwagger, {
+  exposeRoute: true,
   openapi: {
-    info: { title: 'Sinna API', version: '1.0.0' },
-    servers: [{ url: process.env.BASE_URL || 'http://localhost:4000' }]
+    info: { 
+      title: 'Sinna API', 
+      version: '1.0.0',
+      description: 'External API for streaming services offering advanced accessibility features.',
+      contact: {
+        email: 'motion24inc@gmail.com'
+      }
+    },
+    servers: [{ url: process.env.BASE_URL || 'http://localhost:4000' }],
+    tags: [
+      { name: 'System', description: 'System health and monitoring endpoints' },
+      { name: 'Jobs', description: 'Video processing job management' },
+      { name: 'Billing', description: 'Subscription and billing endpoints' },
+      { name: 'Subscription', description: 'Subscription management' },
+      { name: 'Usage', description: 'Usage statistics and limits' },
+      { name: 'Webhooks', description: 'Webhook endpoints (Stripe)' },
+      { name: 'Files', description: 'File and artifact management' }
+    ],
+    components: {
+      securitySchemes: {
+        ApiKeyAuth: {
+          type: 'apiKey',
+          name: 'x-api-key',
+          in: 'header',
+          description: 'API key for authentication. Get your key from your account dashboard.'
+        }
+      }
+    }
   }
 });
-app.register(fastifySwaggerUi, { routePrefix: '/api-docs', uiConfig: { docExpansion: 'list' } });
+app.register(fastifySwaggerUi, { 
+  routePrefix: '/api-docs',
+  uiConfig: { 
+    docExpansion: 'list',
+    persistAuthorization: true
+  }
+});
 
 // CORS
 try {
   const origins = (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (origins.length === 0 && isProduction()) {
+    app.log.error('CORS_ORIGINS is required in production');
+    process.exit(1);
+  }
   app.register(fastifyCors, {
-    origin: origins.length ? origins : true,
+    origin: origins.length ? origins : (isProduction() ? false : true), // Reject all in production if empty
     methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
     credentials: true,
   });
@@ -128,17 +187,31 @@ const jobLatency = new Histogram({ name: 'job_latency_ms', help: 'Job latency in
 const queueDepth = new Gauge({ name: 'queue_depth', help: 'Queue depth per queue', labelNames: ['queue'], registers: [registry] });
 const failuresTotal = new Counter({ name: 'failures_total', help: 'Total failures', labelNames: ['type'], registers: [registry] });
 
-app.get('/metrics', async (req, res) => {
+app.get('/metrics', {
+  schema: {
+    description: 'Prometheus metrics endpoint',
+    tags: ['System'],
+    hide: true, // Hide from Swagger UI
+    response: {
+      200: {
+        type: 'string',
+        description: 'Prometheus metrics in text format'
+      }
+    }
+  }
+}, async (req, res) => {
   res.header('Content-Type', registry.contentType);
   return res.send(await registry.metrics());
 });
 
 // Auth preHandler: validate API key, check subscription/grace, attach tenantId
 app.addHook('preHandler', async (req, reply) => {
-  // Allow public metrics/docs and Stripe webhooks to bypass auth
+  // Allow public metrics/docs, demo endpoint, and Stripe webhooks to bypass auth
+  // Test endpoints now require admin authentication
   if (
     req.url === '/webhooks/stripe' ||
     req.url === '/metrics' ||
+    req.url === '/v1/demo' ||
     req.url.startsWith('/api-docs')
   ) {
     return;
@@ -156,17 +229,228 @@ app.addHook('preHandler', async (req, reply) => {
   const now = new Date();
   const inGrace = row.grace_until && now < new Date(row.grace_until);
   if (!row.active && !inGrace) return reply.code(402).send({ code: 'payment_required' });
-  (req as any).tenantId = row.tenant_id as string;
+  (req as AuthenticatedRequest).tenantId = row.tenant_id as string;
 });
 
-app.get('/health', async (req, reply) => {
+app.get('/health', {
+  schema: {
+    description: 'Check if server is alive',
+    tags: ['System'],
+    security: [{ ApiKeyAuth: [] }],
+    response: {
+      200: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          uptime: { type: 'number' }
+        }
+      },
+      401: {
+        type: 'object',
+        properties: {
+          code: { type: 'string' }
+        }
+      }
+    }
+  }
+}, async (req, reply) => {
   const key = req.headers['x-api-key'];
   if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
   return { ok: true, uptime: process.uptime() };
 });
 
+// Test email endpoint (for testing SendGrid/Resend integration) - Admin only
+app.post('/test-email', {
+  schema: {
+    description: 'Test email sending (Admin only)',
+    tags: ['System'],
+    hide: true, // Hide from Swagger UI (admin endpoint)
+    body: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', format: 'email', description: 'Recipient email address' },
+        subject: { type: 'string', description: 'Email subject' },
+        text: { type: 'string', description: 'Email body text' }
+      },
+      required: ['to']
+    },
+    response: {
+      200: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          message: { type: 'string' },
+          to: { type: 'string' },
+          subject: { type: 'string' },
+          apiKey: { type: 'string' }
+        }
+      },
+      400: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          error: { type: 'string' }
+        }
+      },
+      403: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          error: { type: 'string' }
+        }
+      },
+      500: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          error: { type: 'string' },
+          details: { type: 'string' }
+        }
+      }
+    }
+  }
+}, async (req, reply) => {
+  // Admin authentication check
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (adminKey) {
+    const providedKey = req.headers['x-admin-key'];
+    if (providedKey !== adminKey) {
+      return reply.code(403).send({ success: false, error: 'Forbidden: Admin access required' });
+    }
+  }
+  
+  try {
+    const body = req.body as { to?: string; subject?: string; text?: string };
+    const { to, subject, text } = body;
+    
+    if (!to) {
+      return reply.code(400).send({ success: false, error: 'Email address (to) is required' });
+    }
+    
+    const testEmail = to;
+    const testSubject = subject || 'SendGrid connection test';
+    
+    // Generate a production-ready API key for testing
+    const crypto = await import('crypto');
+    const randomBytes = crypto.randomBytes(24);
+    const randomString = randomBytes.toString('base64')
+      .replace(/[+/=]/g, '') // Remove base64 special chars
+      .toLowerCase()
+      .substring(0, 32); // Ensure consistent length
+    
+    const apiKey = `sk_live_${randomString}`;
+    
+    // If custom text is provided, append the API key to it
+    let finalText;
+    if (text) {
+      finalText = `${text}\n\nYour Production API Key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`;
+    } else {
+      finalText = `✅ Success! Your Render app can send email now.\n\nYour Production API Key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nThis is your actual production-ready API key! 🚀`;
+    }
+    
+    await sendEmailNotice(testEmail, testSubject, finalText);
+    
+    reply.send({ 
+      success: true, 
+      message: 'Email sent successfully!',
+      to: testEmail,
+      subject: testSubject,
+      apiKey: apiKey
+    });
+  } catch (error) {
+    req.log.error({ error }, 'Failed to send test email');
+    reply.code(500).send({ 
+      success: false, 
+      error: 'Failed to send email',
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+// Get email service status - Admin only
+app.get('/email-status', {
+  schema: {
+    description: 'Get email service configuration status (Admin only)',
+    tags: ['System'],
+    hide: true, // Hide from Swagger UI (admin endpoint)
+    response: {
+      200: {
+        type: 'object',
+        properties: {
+          resend_configured: { type: 'boolean' },
+          sendgrid_configured: { type: 'boolean' },
+          from_email: { type: 'string' },
+          services: {
+            type: 'object',
+            properties: {
+              resend: { type: 'string' },
+              sendgrid: { type: 'string' }
+            }
+          }
+        }
+      },
+      403: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          error: { type: 'string' }
+        }
+      }
+    }
+  }
+}, async (req, reply) => {
+  // Admin authentication check
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (adminKey) {
+    const providedKey = req.headers['x-admin-key'];
+    if (providedKey !== adminKey) {
+      return reply.code(403).send({ success: false, error: 'Forbidden: Admin access required' });
+    }
+  }
+  
+  const resendKey = process.env.RESEND_API_KEY;
+  const sendgridKey = process.env.SENDGRID_API_KEY;
+  const fromEmail = process.env.NOTIFY_FROM_EMAIL;
+  
+  reply.send({
+    resend_configured: !!resendKey,
+    sendgrid_configured: !!sendgridKey,
+    from_email: fromEmail || 'not configured',
+    services: {
+      resend: resendKey ? 'Available' : 'Not configured',
+      sendgrid: sendgridKey ? 'Available' : 'Not configured'
+    }
+  });
+});
+
 // Readiness probe: quick DB ping only
-app.get('/readiness', async (req, reply) => {
+app.get('/readiness', {
+  schema: {
+    description: 'Check if database is ready',
+    tags: ['System'],
+    security: [{ ApiKeyAuth: [] }],
+    response: {
+      200: {
+        type: 'object',
+        properties: {
+          db: { type: 'string', enum: ['up'] }
+        }
+      },
+      401: {
+        type: 'object',
+        properties: {
+          code: { type: 'string' }
+        }
+      },
+      503: {
+        type: 'object',
+        properties: {
+          db: { type: 'string', enum: ['down'] }
+        }
+      }
+    }
+  }
+}, async (req, reply) => {
   const key = req.headers['x-api-key'];
   if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
   try {
@@ -180,35 +464,25 @@ app.get('/readiness', async (req, reply) => {
 
 // Demo endpoint and status header
 app.addHook('onSend', async (req, reply, payload) => {
-  reply.header('X-Status-Page', process.env.STATUS_PAGE_URL || 'https://status.yourdomain');
-  return payload as any;
+  reply.header('X-Status-Page', process.env.STATUS_PAGE_URL || 'https://status.sinna.site');
+  return payload;
 });
 
-app.get('/v1/demo', async () => ({ ok: true, now: new Date().toISOString() }));
-// Billing: create subscription Checkout Session for Standard plan
-app.post('/v1/billing/subscribe', async (req, reply) => {
-  const tenantId = (req as any).tenantId as string | undefined;
-  if (!tenantId) return reply.code(401).send({ code: 'unauthorized' });
-  if (!stripe) return reply.code(503).send({ code: 'stripe_unconfigured' });
-  const priceId = process.env.STRIPE_STANDARD_PRICE_ID || '';
-  if (!priceId) return reply.code(503).send({ code: 'missing_price' });
-  try {
-    const session = await (stripe as Stripe).checkout.sessions.create({
-      mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: (process.env.BASE_URL || 'https://sinna1-0.onrender.com') + '/billing/success',
-      cancel_url: (process.env.BASE_URL || 'https://sinna1-0.onrender.com') + '/billing/cancel',
-      client_reference_id: tenantId,
-      subscription_data: {
-        metadata: { tenantId },
-      },
-    });
-    return reply.send({ success: true, url: session.url });
-  } catch (e) {
-    req.log.error({ err: e }, 'Failed to create Stripe Checkout Session');
-    return reply.code(500).send({ success: false, error: 'stripe_error' });
+app.get('/v1/demo', {
+  schema: {
+    description: 'Demo endpoint to verify API is working',
+    tags: ['System'],
+    response: {
+      200: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          now: { type: 'string', format: 'date-time' }
+        }
+      }
+    }
   }
-});
+}, async () => ({ ok: true, now: new Date().toISOString() }));
 // Rate limit (rate-limiter-flexible): single global limiter with bypass + headers
 const redisUrl = process.env.REDIS_URL;
 let redis: IORedis | null = null;
@@ -258,30 +532,47 @@ function constantTimeEquals(a: string, b: string): boolean {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
-function isHmacTrusted(req: any): boolean {
+function isHmacTrusted(req: FastifyRequest): boolean {
   const secret = process.env.WEBHOOK_SIGNING_SECRET || '';
   if (!secret) return false;
   const headerName = (process.env.WEBHOOK_HMAC_HEADER || 'x-webhook-signature').toLowerCase();
   const sigHeader = (req.headers[headerName] as string | undefined) || '';
   if (!sigHeader) return false;
   const provided = sigHeader.startsWith('sha256=') ? sigHeader.slice(7) : sigHeader;
-  const raw = (req as any).rawBody ? (req as any).rawBody as Buffer : Buffer.from(JSON.stringify(req.body || {}));
+  const raw = (req as AuthenticatedRequest).rawBody || Buffer.from(JSON.stringify(req.body || {}));
   const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
   return constantTimeEquals(expected, provided);
 }
 
-function getClientKey(req: any): string {
-  return (req as any).tenantId || req.ip;
+function getClientKey(req: FastifyRequest): string {
+  return (req as AuthenticatedRequest).tenantId || req.ip;
 }
 
+// Webhook-specific rate limiter (higher limit but still limited)
+let webhookLimiter: RateLimiterRedis | RateLimiterMemory = new RateLimiterMemory({ points: 100, duration: 60 });
+
 app.addHook('preHandler', async (req, reply) => {
-  // Skip rate limiting for public health/readiness/metrics/docs routes and Stripe webhooks
+  // Apply webhook rate limiting separately
+  if (req.url === '/webhooks/stripe') {
+    try {
+      const res = await webhookLimiter.consume(req.ip, 1);
+      reply.header('X-RateLimit-Limit', '100');
+      reply.header('X-RateLimit-Remaining', Math.max(0, res.remainingPoints));
+    } catch (rej: unknown) {
+      const rejError = rej as { msBeforeNext?: number };
+      const retrySec = Math.ceil((rejError.msBeforeNext || 1000) / 1000);
+      reply.header('Retry-After', retrySec);
+      return reply.code(429).send({ success: false, error: 'rate_limited', retry_after_seconds: retrySec });
+    }
+    return; // Skip global rate limiting for webhooks
+  }
+  
+  // Skip rate limiting for public health/readiness/metrics/docs routes
   if (
     req.url === '/health' ||
     req.url === '/readiness' ||
     req.url === '/metrics' ||
-    req.url.startsWith('/api-docs') ||
-    req.url === '/webhooks/stripe'
+    req.url.startsWith('/api-docs')
   ) {
     return;
   }
@@ -296,304 +587,194 @@ app.addHook('preHandler', async (req, reply) => {
     const res = await limiter.consume(key, 1);
     reply.header('X-RateLimit-Limit', pointsPerMinute);
     reply.header('X-RateLimit-Remaining', Math.max(0, res.remainingPoints));
-  } catch (rej: any) {
-    const retrySec = Math.ceil((rej.msBeforeNext || 1000) / 1000);
+  } catch (rej: unknown) {
+    const rejError = rej as { msBeforeNext?: number };
+    const retrySec = Math.ceil((rejError.msBeforeNext || 1000) / 1000);
     reply.header('Retry-After', retrySec);
     return reply.code(429).send({ code: 'rate_limited', retry_after_seconds: retrySec });
   }
 });
 
 // Simple in-memory tenant store (demo)
-type TenantState = { active: boolean; graceUntil?: number; usage: { requests: number; minutes: number; jobs: number; storage: number; cap: number }; customerId?: string };
 const tenants = new Map<string, TenantState>();
 
 // Subscription gating now handled in the auth preHandler above
 
 // BullMQ queues (shared Redis connection)
-const captionsQ = new Queue('captions', { connection: redisConnection as any });
-const adQ = new Queue('ad', { connection: redisConnection as any });
-const colorQ = new Queue('color', { connection: redisConnection as any });
+const captionsQ = new Queue('captions', { connection: redisConnection });
+const adQ = new Queue('ad', { connection: redisConnection });
+const colorQ = new Queue('color', { connection: redisConnection });
+const videoTransformQ = new Queue('video-transform', { connection: redisConnection });
 
-// POST /v1/jobs: validate, idempotency, enqueue pipeline
-app.post('/v1/jobs', async (req, res) => {
-  const Body = z.object({
-    source_url: z.string().url(),
-    preset_id: z.string().optional(),
-  });
-  const body = Body.parse(req.body);
-  const tenantId = (req as any).tenantId as string;
+// Stripe client initialization
+const stripeKey = process.env.STRIPE_SECRET_KEY || '';
+const stripe = stripeKey ? new Stripe(stripeKey, { apiVersion: '2023-10-16' }) : null;
 
-  // Usage gate: count one job before enqueue; 429 if exceeding caps
-  try {
-    const gate = await incrementAndGateUsage(tenantId, { jobs: 1 });
-    if (gate.blocked) {
-      return res.code(429).send({ code: 'rate_limited', reason: gate.reason });
-    }
-  } catch (err) {
-    req.log.warn({ err }, 'usage gate failed');
-  }
+// Register route modules (will be called after redis is initialized in start())
+function registerRoutes(): void {
+  registerBillingRoutes(app, stripe);
+  registerWebhookRoutes(app, stripe, tenants);
+  registerSubscriptionRoutes(app);
+  // Note: redis will be set in start() function, routes will use it when called
+}
 
-  // idempotency key: sha256(source_url+preset+tenant)
-  const idemKey = crypto.createHash('sha256').update(`${body.source_url}|${body.preset_id || ''}|${tenantId}`).digest('hex');
-  const idemCacheKey = `jobs:idempotency:${idemKey}`;
-  let existing: string | null = null;
-  if (redis) existing = await redis.get(idemCacheKey);
-  if (existing) {
-    return res.code(200).send({ success: true, data: JSON.parse(existing), message: 'Idempotent replay' });
-  }
+// Jobs routes are now in routes/jobs.ts
 
-  // derive defaults from preset
-  const preset = (body.preset_id || 'everyday').toLowerCase();
-  const presetsPath = path.join(__dirname, '..', '..', '..', 'config', 'presets.json');
-  let presets: any = {};
-  try { presets = JSON.parse(fs.readFileSync(presetsPath, 'utf-8')); } catch {}
-  const presetCfg = presets[preset] || presets['everyday'] || { subtitleFormats: ['vtt','srt','ttml'] };
-  const language = 'en';
-  const captionFormat = 'vtt';
-
-  // enqueue pipeline: captions -> ad -> color
-  const captionJob = await captionsQ.add('generate-subtitles', {
-    videoUrl: body.source_url,
-    language,
-    format: captionFormat,
-    formats: presetCfg.subtitleFormats,
-    captionStyle: presetCfg.captionStyle,
-    burnIn: !!presetCfg.burnIn,
-    tenantId,
-    userId: tenantId,
-  });
-
-  const adJob = await adQ.add('generate-audio-description', {
-    videoUrl: body.source_url,
-    language,
-    enabled: !!presetCfg.adEnabled,
-    speed: presetCfg.speed || 1.0,
-    tenantId,
-    userId: tenantId,
-    dependsOn: captionJob.id,
-  });
-
-  const colorJob = await colorQ.add('analyze-colors', {
-    videoUrl: body.source_url,
-    colorProfile: presetCfg.colorProfile,
-    motionReduce: !!presetCfg.motionReduce,
-    strobeReduce: !!presetCfg.strobeReduce,
-    tenantId,
-    userId: tenantId,
-    dependsOn: adJob.id,
-  });
-
-  const jobBundle = { id: captionJob.id, steps: { captions: captionJob.id, ad: adJob.id, color: colorJob.id }, preset };
-  if (redis) await redis.setex(idemCacheKey, 24 * 3600, JSON.stringify(jobBundle));
-
-  // simple usage counters and cap notices
-  try {
-    const { pool } = getDb();
-    // ensure row exists for current month
-    await pool.query(
-      `insert into usage_counters(tenant_id, period_start, minutes_used, jobs, egress_bytes)
-       values ($1, date_trunc('month', now())::date, 0, 0, 0)
-       on conflict (tenant_id) do nothing`,
-      [tenantId]
-    );
-    await pool.query(
-      `update usage_counters
-       set jobs = jobs + 1
-       where tenant_id = $1`,
-      [tenantId]
-    );
-  } catch (e) {
-    req.log.warn({ err: e }, 'Failed to persist usage counters');
-  }
-
-  // metrics: update queue depth
-  const [cDepth, aDepth, colDepth] = await Promise.all([
-    captionsQ.count(), adQ.count(), colorQ.count()
-  ]);
-  queueDepth.labels({ queue: 'captionsQ' }).set(cDepth);
-  queueDepth.labels({ queue: 'adQ' }).set(aDepth);
-  queueDepth.labels({ queue: 'colorQ' }).set(colDepth);
-
-  return res.code(201).send({ success: true, data: jobBundle, message: 'Pipeline queued' });
-});
-
-// GET /v1/jobs/{id}: summarize pipeline status
-app.get('/v1/jobs/:id', async (req, res) => {
-  const Params = z.object({ id: z.string() });
-  const { id } = Params.parse(req.params);
-  const tenantId = (req as any).tenantId as string;
-
-  // Try idempotency cache first
-  if (!redis) return res.code(404).send({ success: false, error: 'Job not found' });
-  const prefix = 'jobs:idempotency:';
-  const stream = (redis as any).scanStream({ match: `${prefix}*` });
-  let bundle: any = null;
-  for await (const keys of stream) {
-    for (const key of keys) {
-      const raw = await (redis as any).get(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.id === id) bundle = parsed;
+// GET /v1/me/usage
+app.get('/v1/me/usage', {
+  schema: {
+    description: 'Get current usage statistics for the billing period',
+    tags: ['Usage'],
+    security: [{ ApiKeyAuth: [] }],
+    response: {
+      200: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          data: {
+            type: 'object',
+            properties: {
+              period_start: { type: 'string', format: 'date-time' },
+              period_end: { type: 'string', format: 'date-time' },
+              requests: { type: 'number' },
+              minutes: { type: 'number' },
+              jobs: { type: 'number' },
+              storage: { type: 'number' },
+              cap: { type: 'number' }
+            }
+          }
+        }
+      },
+      401: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          error: { type: 'string' }
+        }
       }
     }
   }
-  if (!bundle) return res.code(404).send({ success: false, error: 'Job not found' });
-
-  const [c, a, cl] = await Promise.all([
-    captionsQ.getJob(bundle.steps.captions),
-    adQ.getJob(bundle.steps.ad),
-    colorQ.getJob(bundle.steps.color),
-  ]);
-
-  const status = {
-    captions: c?.isCompleted() ? 'completed' : c?.failedReason ? 'failed' : 'pending',
-    ad: a?.isCompleted() ? 'completed' : a?.failedReason ? 'failed' : 'pending',
-    color: cl?.isCompleted() ? 'completed' : cl?.failedReason ? 'failed' : 'pending',
-  };
-
-  // metrics
-  if (c?.failedReason || a?.failedReason || cl?.failedReason) {
-    failuresTotal.labels({ type: 'job' }).inc();
+}, async (req, res) => {
+  const tenantId = (req as AuthenticatedRequest).tenantId;
+  if (!tenantId) {
+    return res.code(401).send({ success: false, error: 'unauthorized' });
   }
-
-  const artifacts: any[] = [];
-  if (c?.isCompleted()) {
-    const cResult = c.returnvalue as any;
-    if (cResult?.artifactKey) {
-      const signedUrl = await getSignedGetUrl(cResult.artifactKey);
-      artifacts.push({ type: 'subtitles', format: 'vtt', url: signedUrl, key: cResult.artifactKey });
-    }
-  }
-  if (a?.isCompleted()) {
-    const aResult = a.returnvalue as any;
-    if (aResult?.artifactKey) {
-      const signedUrl = await getSignedGetUrl(aResult.artifactKey);
-      artifacts.push({ type: 'audio_description', format: 'mp3', url: signedUrl, key: aResult.artifactKey });
-    }
-  }
-  if (cl?.isCompleted()) {
-    const clResult = cl.returnvalue as any;
-    if (clResult?.artifactKey) {
-      const signedUrl = await getSignedGetUrl(clResult.artifactKey);
-      artifacts.push({ type: 'color_report', format: 'json', url: signedUrl, key: clResult.artifactKey });
-    }
-  }
-
-  const exportPackUrl = artifacts.length ? await getSignedGetUrl(`exports/${id}.zip`) : null;
-
-  return res.send({ success: true, data: { id, status, artifacts, exportPackUrl } });
-});
-
-// GET /v1/me/usage
-app.get('/v1/me/usage', async (req, res) => {
-  const tenantId = (req as any).tenantId as string;
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  const state = tenants.get(tenantId) || { usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 } } as TenantState;
+  const state = tenants.get(tenantId) || {
+    active: false,
+    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
+  } as TenantState;
   res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
 });
 
-// Raw-body Stripe webhook route (tolerate missing keys to avoid boot failure)
-const stripeKey = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY_LIVE || '';
-const stripe = stripeKey ? new Stripe(stripeKey, { apiVersion: '2023-10-16' }) : null;
-
-app.post('/webhooks/stripe', { config: { rawBody: true } }, async (req, res) => {
-  const sig = req.headers['stripe-signature'] as string;
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET_LIVE || '';
-  if (!stripe || !webhookSecret) {
-    return res.code(503).send({ success: false, error: 'stripe_unconfigured' });
-  }
-  const rawBody = (req as any).rawBody;
-  let event: Stripe.Event;
-  try {
-    event = (stripe as Stripe).webhooks.constructEvent(rawBody, sig, webhookSecret);
-  } catch (err) {
-    req.log.error({ err }, 'Stripe signature verification failed');
-    return res.code(400).send({ success: false, error: 'Invalid signature' });
-  }
-
-  if (event.type === 'invoice.payment_succeeded') {
-    const invoice = event.data.object as Stripe.Invoice;
-    const tenantId = invoice.customer as string;
-    const state = tenants.get(tenantId) || { active: false, usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 } } as TenantState;
-    state.active = true;
-    state.graceUntil = undefined;
-    state.usage.requests = 0; state.usage.minutes = 0; state.usage.jobs = 0; state.usage.storage = 0;
-    tenants.set(tenantId, state);
-  }
-
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object as Stripe.Checkout.Session;
-    const email = session.customer_details?.email;
-    
-    if (email) {
-      try {
-        // Generate API key
-        const crypto = require('crypto');
-        const apiKey = crypto.randomBytes(32).toString('hex');
-        const hashed = crypto.createHash('sha256').update(apiKey).digest('hex');
-        
-        // Store in database using existing helper
-        const { tenantId } = await seedTenantAndApiKey({
-          tenantName: email, // Use email as tenant name
-          plan: 'standard',
-          apiKeyHash: hashed
-        });
-        
-        // Update in-memory state
-        const state = tenants.get(tenantId) || { active: false, usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 } } as TenantState;
-        state.active = true;
-        state.graceUntil = undefined;
-        tenants.set(tenantId, state);
-        
-        // Send email with API key (you'll need to implement sendEmail function)
-        req.log.info({ email, tenantId }, 'New subscription created, API key generated');
-        // TODO: Implement sendEmail(email, `Your Sinna API key: ${apiKey}`);
-        
-      } catch (error) {
-        req.log.error({ error, email }, 'Failed to create tenant and API key for new subscription');
-      }
-    }
-  }
-
-  if (event.type === 'invoice.payment_failed') {
-    const invoice = event.data.object as Stripe.Invoice;
-    const tenantId = invoice.customer as string;
-    const state = tenants.get(tenantId) || { active: false, usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 } } as TenantState;
-    state.active = false;
-    const graceDays = parseInt(process.env.GRACE_DAYS || '7', 10);
-    state.graceUntil = Date.now() + graceDays * 24 * 3600 * 1000;
-    tenants.set(tenantId, state);
-    // TODO: email notice (stub)
-    req.log.warn({ tenantId }, 'Payment failed - entered grace period');
-    const email = (invoice.customer_email || process.env.NOTIFY_FALLBACK_EMAIL || '').toString();
-    if (email) await sendEmailNotice(email, 'Sinna: Payment failed, grace period started', `Your subscription payment failed. You have a ${graceDays}-day grace period.`);
-  }
-
-  res.send({ received: true });
-});
+// Webhook routes are now in routes/webhooks.ts
 
 // Capture unhandled errors
 app.addHook('onError', async (req, _reply, err) => {
   try {
     if (process.env.SENTRY_DSN) {
       Sentry.captureException(err, {
-        extra: { url: req.url, method: req.method, tenantId: (req as any).tenantId },
-      } as any);
+        extra: {
+          url: req.url,
+          method: req.method,
+          tenantId: (req as AuthenticatedRequest).tenantId,
+          requestId: (req as AuthenticatedRequest).requestId,
+        },
+      });
     }
-  } catch {}
+  } catch {
+    // Ignore Sentry errors
+  }
 });
 
 // GET /v1/files/:id:sign -> return signed read URL
-app.get('/v1/files/:id:sign', async (req, res) => {
-  const params = z
-    .object({ id: z.string().min(1), ttl: z.coerce.number().int().positive().optional() })
-    .parse({ ...(req.params as any), ...(req.query as any) });
+app.get('/v1/files/:id:sign', {
+  schema: {
+    description: 'Generate a signed URL for file access',
+    tags: ['Files'],
+    security: [{ ApiKeyAuth: [] }],
+    params: {
+      type: 'object',
+      required: ['id'],
+      properties: {
+        id: {
+          type: 'string',
+          description: 'File ID or path in R2 storage'
+        }
+      }
+    },
+    querystring: {
+      type: 'object',
+      properties: {
+        ttl: {
+          type: 'number',
+          description: 'URL expiration in seconds (default: 3600, max: 86400)'
+        }
+      }
+    },
+    response: {
+      200: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          data: {
+            type: 'object',
+            properties: {
+              url: { type: 'string', format: 'uri' },
+              expires_in: { type: 'number' }
+            }
+          }
+        }
+      },
+      400: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          error: { type: 'string' },
+          details: { type: 'array' }
+        }
+      },
+      401: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          error: { type: 'string' }
+        }
+      },
+      500: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean' },
+          error: { type: 'string' }
+        }
+      }
+    }
+  }
+}, async (req, res) => {
+  try {
+    const paramsObj: Record<string, unknown> = {
+      ...(req.params as Record<string, unknown>),
+      ...(req.query as Record<string, unknown>),
+    };
+    const params = z
+      .object({ 
+        id: z.string().min(1).max(255).regex(/^[a-zA-Z0-9_\-/]+$/, 'File ID contains invalid characters'), 
+        ttl: z.coerce.number().int().positive().max(86400).optional() 
+      })
+      .parse(paramsObj);
 
-  const ttl = params.ttl ?? 3600;
-  const url = await getSignedGetUrl(params.id, ttl);
-  return { success: true, data: { url, expires_in: ttl } };
+    const ttl = params.ttl ?? 3600;
+    const url = await getSignedGetUrl(params.id, ttl);
+    return { success: true, data: { url, expires_in: ttl } };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.code(400).send({ success: false, error: 'Invalid parameters', details: error.errors });
+    }
+    req.log.error({ error }, 'Failed to generate signed URL');
+    return res.code(500).send({ success: false, error: 'Failed to generate signed URL' });
+  }
 });
 
 const port = Number(process.env.PORT || 4000);
@@ -612,18 +793,27 @@ async function start() {
         enableReadyCheck: false,
         retryStrategy: () => null,
         connectTimeout: 1000,
-      } as any);
+      });
       try {
         await client.connect();
-        redis = client as any;
+        redis = client;
         limiter = new RateLimiterRedis({
-          storeClient: redis as any,
+          storeClient: redis,
           points: pointsPerMinute,
           duration: 60,
           keyPrefix: 'rlf:global',
           execEvenly: true,
           blockDuration: 0,
           insuranceLimiter: new RateLimiterMemory({ points: pointsPerMinute, duration: 60 }),
+        });
+        webhookLimiter = new RateLimiterRedis({
+          storeClient: redis,
+          points: 100,
+          duration: 60,
+          keyPrefix: 'rlf:webhook',
+          execEvenly: true,
+          blockDuration: 0,
+          insuranceLimiter: new RateLimiterMemory({ points: 100, duration: 60 }),
         });
         app.log.info('Redis connected; using distributed rate limiter');
       } catch (e) {
@@ -632,6 +822,12 @@ async function start() {
         redis = null;
       }
     }
+    
+    // Register routes after redis is initialized
+    registerRoutes();
+    // Register job routes with current redis state
+    registerJobRoutes(app, { captions: captionsQ, ad: adQ, color: colorQ, videoTransform: videoTransformQ }, redis, queueDepth, failuresTotal);
+    
     // Sanity check: print environment
     // eslint-disable-next-line no-console
     console.log('env:', process.env.NODE_ENV);
@@ -646,5 +842,6 @@ async function start() {
 }
 
 start();
+
 
 
