@@ -123,50 +123,6 @@ try {
   process.exit(1);
 }
 
-// Swagger (OpenAPI) docs for Fastify API
-// IMPORTANT: Register Swagger BEFORE routes so it can hook into route registration
-// Note: app.register() sets up hooks synchronously, so routes registered after this will be captured
-app.register(fastifySwagger, {
-  mode: 'dynamic',
-  openapi: {
-    info: { 
-      title: 'Sinna API', 
-      version: '1.0.0',
-      description: 'External API for streaming services offering advanced accessibility features.',
-      contact: {
-        email: 'motion24inc@gmail.com'
-      }
-    },
-    servers: [{ url: process.env.BASE_URL || 'http://localhost:4000' }],
-    tags: [
-      { name: 'System', description: 'System health and monitoring endpoints' },
-      { name: 'Jobs', description: 'Video processing job management' },
-      { name: 'Billing', description: 'Subscription and billing endpoints' },
-      { name: 'Subscription', description: 'Subscription management' },
-      { name: 'Usage', description: 'Usage statistics and limits' },
-      { name: 'Webhooks', description: 'Webhook endpoints (Stripe)' },
-      { name: 'Files', description: 'File and artifact management' }
-    ],
-    components: {
-      securitySchemes: {
-        ApiKeyAuth: {
-          type: 'apiKey' as const,
-          name: 'x-api-key',
-          in: 'header' as const,
-          description: 'API key for authentication. Get your key from your account dashboard.'
-        }
-      }
-    }
-  }
-});
-app.register(fastifySwaggerUi, { 
-  routePrefix: '/api-docs',
-  uiConfig: { 
-    docExpansion: 'list',
-    persistAuthorization: true
-  }
-});
-
 // CORS
 try {
   const origins = (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -784,6 +740,49 @@ const port = Number(process.env.PORT || 4000);
 
 async function start() {
   try {
+    // Register Swagger FIRST before any routes
+    // IMPORTANT: Must await to ensure Swagger is fully initialized and hooks are active
+    await app.register(fastifySwagger, {
+      mode: 'dynamic',
+      openapi: {
+        info: { 
+          title: 'Sinna API', 
+          version: '1.0.0',
+          description: 'External API for streaming services offering advanced accessibility features.',
+          contact: {
+            email: 'motion24inc@gmail.com'
+          }
+        },
+        servers: [{ url: process.env.BASE_URL || 'http://localhost:4000' }],
+        tags: [
+          { name: 'System', description: 'System health and monitoring endpoints' },
+          { name: 'Jobs', description: 'Video processing job management' },
+          { name: 'Billing', description: 'Subscription and billing endpoints' },
+          { name: 'Subscription', description: 'Subscription management' },
+          { name: 'Usage', description: 'Usage statistics and limits' },
+          { name: 'Webhooks', description: 'Webhook endpoints (Stripe)' },
+          { name: 'Files', description: 'File and artifact management' }
+        ],
+        components: {
+          securitySchemes: {
+            ApiKeyAuth: {
+              type: 'apiKey' as const,
+              name: 'x-api-key',
+              in: 'header' as const,
+              description: 'API key for authentication. Get your key from your account dashboard.'
+            }
+          }
+        }
+      }
+    });
+    await app.register(fastifySwaggerUi, { 
+      routePrefix: '/api-docs',
+      uiConfig: { 
+        docExpansion: 'list',
+        persistAuthorization: true
+      }
+    });
+    
     if (process.env.RUN_MIGRATIONS_ON_BOOT === '1') {
       await runMigrations();
       app.log.info('DB migrations completed');
