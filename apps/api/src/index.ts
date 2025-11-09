@@ -682,14 +682,51 @@ function registerTopLevelRoutes(): void {
       }
     }
     
-    return reply.send({
-      success: true,
-      message: 'Payment successful! 🎉',
-      session_id: sessionId || null,
-      note: apiKeyInfo 
-        ? `Your API key has been sent to ${apiKeyInfo.email}. Check your email inbox.`
-        : 'Your API key is being generated and will be emailed to you shortly. Please check your email inbox.'
-    });
+    const emailMessage = apiKeyInfo 
+      ? `Your API key has been sent to ${apiKeyInfo.email}. Check your email inbox.`
+      : 'Your API key is being generated and will be emailed to you shortly. Please check your email inbox.';
+    
+    return reply.type('text/html').send(`
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Payment Successful</title>
+        <style>
+          body {
+            font-family: system-ui, -apple-system, sans-serif;
+            text-align: center;
+            padding: 50px;
+            background-color: #f7f9fc;
+            color: #333;
+          }
+          .card {
+            max-width: 480px;
+            margin: 40px auto;
+            background: #fff;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+          }
+          h1 {
+            color: #06b67b;
+          }
+          p {
+            font-size: 16px;
+            margin-top: 12px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>✅ Payment Successful</h1>
+          <p>${emailMessage}</p>
+          <p>Please check your inbox for confirmation.</p>
+          <a href="https://sinna.site" style="color:#06b67b;text-decoration:none;">Back to home</a>
+        </div>
+      </body>
+      </html>
+    `);
   });
 
   // GET /billing/cancel - Public cancel page after Stripe checkout cancellation
