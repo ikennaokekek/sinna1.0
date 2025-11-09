@@ -8,7 +8,10 @@ export const EnvSchema = z
     R2_BUCKET: z.string().min(1, 'R2_BUCKET is required'),
 
     REDIS_URL: z.string().url('REDIS_URL must be a valid URL'),
-    BASE_URL: z.string().url('BASE_URL must be a valid URL'),
+    // BASE_URL is deprecated, use BASE_URL_PUBLIC instead
+    BASE_URL: z.string().url('BASE_URL must be a valid URL').optional(),
+    BASE_URL_PUBLIC: z.string().url('BASE_URL_PUBLIC must be a valid URL').optional(),
+    BASE_URL_PRIVATE: z.string().url('BASE_URL_PRIVATE must be a valid URL').optional(),
 
     TRUST_PROXIES: z.string().optional(),
     TRUSTED_CIDRS: z.string().optional(),
