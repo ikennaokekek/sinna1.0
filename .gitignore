@@ -117,3 +117,7 @@ playwright/.cache/
 # Docker
 .dockerignore
 Dockerfile*
+.cursor/*.mov
+.cursor/*.MOV
+.cursor/*.mp4
+.cursor/*.MP4

@@ -301,6 +301,37 @@ services:
       - key: CLOUDINARY_URL
         sync: false
 
+  # Scheduled Cron Job - Runs every 3 days
+  - type: cron
+    name: sinna-scheduled-task
+    runtime: node
+    plan: free
+    region: frankfurt
+    schedule: "0 0 */3 * *"  # Every 3 days at midnight UTC
+    buildCommand: pnpm i --frozen-lockfile && pnpm -C packages/types build
+    startCommand: pnpm tsx scripts/scheduled-task.ts
+    envVars:
+      - key: NODE_ENV
+        value: production
+      
+      # Database (required for statistics)
+      - key: DATABASE_URL
+        sync: false
+      
+      # Redis (required for health checks)
+      - key: REDIS_URL
+        sync: false
+      
+      # Email service (required for notifications)
+      - key: RESEND_API_KEY
+        sync: false
+      - key: NOTIFY_FROM_EMAIL
+        sync: false
+      
+      # Optional: Admin email for notifications
+      - key: ADMIN_EMAIL
+        sync: false
+
 # Databases (if needed in future)
 databases: []
 
