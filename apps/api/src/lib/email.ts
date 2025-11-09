@@ -17,7 +17,7 @@ const logger = {
 };
 
 export async function sendEmailNotice(to: string, subject: string, text: string): Promise<void> {
-  const fromEmail = process.env.NOTIFY_FROM_EMAIL || 'donotreply@sinna.site';
+  const fromEmail = process.env.NOTIFY_FROM_EMAIL || 'noreply@sinna.site';
   
   logger.debug('Email service check', {
     resendKey: process.env.RESEND_API_KEY ? 'present' : 'missing',

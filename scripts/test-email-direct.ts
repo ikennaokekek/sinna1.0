@@ -12,7 +12,7 @@ const TEST_API_KEY = 'sk_test_direct_test_key_12345678901234567890';
 async function main() {
   console.log('📧 Testing email delivery...');
   console.log(`To: ${TEST_EMAIL}`);
-  console.log(`From: ${process.env.NOTIFY_FROM_EMAIL || 'donotreply@sinna.site'}`);
+  console.log(`From: ${process.env.NOTIFY_FROM_EMAIL || 'noreply@sinna.site'}`);
   console.log(`Resend Key: ${process.env.RESEND_API_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log(`SendGrid Key: ${process.env.SENDGRID_API_KEY ? '✅ Present' : '❌ Missing'}`);
   console.log('');

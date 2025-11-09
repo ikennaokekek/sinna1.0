@@ -81,7 +81,7 @@ async function main() {
 
     console.log('');
     console.log('📧 Sending email...');
-    console.log(`From: ${process.env.NOTIFY_FROM_EMAIL || 'donotreply@sinna.site'}`);
+    console.log(`From: ${process.env.NOTIFY_FROM_EMAIL || 'noreply@sinna.site'}`);
     console.log(`To: ${EMAIL}`);
     console.log(`Resend Key: ${process.env.RESEND_API_KEY ? '✅ Present' : '❌ Missing'}`);
     console.log(`SendGrid Key: ${process.env.SENDGRID_API_KEY ? '✅ Present' : '❌ Missing'}`);

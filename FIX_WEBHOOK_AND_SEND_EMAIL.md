@@ -27,7 +27,7 @@ pnpm tsx scripts/manual-send-api-key.ts ikennaokeke1996@gmail.com
 This will:
 - ✅ Check if tenant exists (create if needed)
 - ✅ Generate API key
-- ✅ Send email from `donotreply@sinna.site`
+- ✅ Send email from `noreply@sinna.site`
 - ✅ Show API key in console if email fails
 
 ### Step 2: Verify Email Service Configuration
@@ -35,7 +35,7 @@ This will:
 Before running the script, verify these environment variables in Render:
 
 ```
-NOTIFY_FROM_EMAIL=donotreply@sinna.site
+NOTIFY_FROM_EMAIL=noreply@sinna.site
 RESEND_API_KEY=re_xxxxx
 # OR
 SENDGRID_API_KEY=SG.xxxxx

@@ -2,7 +2,7 @@
 
 ## Changes Made
 
-1. **Updated email sender address**: Changed from `noreply@sinna.site` to `donotreply@sinna.site`
+1. **Updated email sender address**: Set to `noreply@sinna.site`
 2. **Improved error handling**: Email failures now throw errors and log API keys prominently
 3. **Enhanced logging**: Added webhook event logging and detailed email service status
 4. **Better debugging**: API keys are logged if email fails for manual retrieval
@@ -14,7 +14,7 @@
 Go to **Render Dashboard** → **sinna-api** → **Environment** and ensure these are set:
 
 ```
-NOTIFY_FROM_EMAIL=donotreply@sinna.site
+NOTIFY_FROM_EMAIL=noreply@sinna.site
 RESEND_API_KEY=re_xxxxx
 # OR
 SENDGRID_API_KEY=SG.xxxxx
