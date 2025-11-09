@@ -111,7 +111,7 @@ importers:
         specifier: ^3.14.0
         version: 3.14.0
       typescript:
-        specifier: ^5.2.2
+        specifier: ^5.9.2
         version: 5.9.2
 
   apps/api:
@@ -189,9 +189,15 @@ importers:
       bullmq:
         specifier: ^4.15.0
         version: 4.18.3
+      cloudinary:
+        specifier: ^1.41.0
+        version: 1.41.3
       ioredis:
         specifier: ^5.3.2
         version: 5.7.0
+      openai:
+        specifier: ^4.20.1
+        version: 4.104.0(ws@8.18.3)(zod@3.25.76)
       pg:
         specifier: ^8.16.3
         version: 8.16.3
