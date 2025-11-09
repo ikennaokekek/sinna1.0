@@ -94,6 +94,7 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
 
       // Handle checkout.session.completed
       if (event.type === 'checkout.session.completed') {
+        req.log.info({ eventId: event.id, eventType: event.type }, 'Received checkout.session.completed webhook');
         await handleCheckoutSessionCompleted(event, req, tenants);
       }
 
