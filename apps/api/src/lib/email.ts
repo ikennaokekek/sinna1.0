@@ -17,7 +17,7 @@ const logger = {
 };
 
 export async function sendEmailNotice(to: string, subject: string, text: string): Promise<void> {
-  const fromEmail = process.env.NOTIFY_FROM_EMAIL || 'noreply@sinna.site';
+  const fromEmail = process.env.NOTIFY_FROM_EMAIL || 'donotreply@sinna.site';
   
   logger.debug('Email service check', {
     resendKey: process.env.RESEND_API_KEY ? 'present' : 'missing',
@@ -84,13 +84,22 @@ export async function sendEmailNotice(to: string, subject: string, text: string)
         const errorText = await response.text().catch(() => '');
         logger.warn('SendGrid API returned error', { status: response.status, statusText: response.statusText, error: errorText });
       }
-    } catch (err) {
+      } catch (err) {
       logger.error('SendGrid API request failed', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  // If both fail, log as stub
-  logger.warn('No email service configured or all services failed', { to, subject, reason: 'No email service configured' });
+  // If both fail, throw error so caller knows email failed
+  const errorMessage = 'No email service configured or all services failed';
+  logger.error(errorMessage, { 
+    to, 
+    subject, 
+    fromEmail,
+    resendConfigured: !!resendKey,
+    sendgridConfigured: !!sendgridKey,
+    reason: !resendKey && !sendgridKey ? 'No email service configured' : 'All email services failed'
+  });
+  throw new Error(`${errorMessage}. Resend: ${resendKey ? 'configured' : 'missing'}, SendGrid: ${sendgridKey ? 'configured' : 'missing'}`);
 }
 
 

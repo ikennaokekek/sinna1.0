@@ -225,12 +225,25 @@ async function handleCheckoutSessionCompleted(
     state.graceUntil = undefined;
     tenants.set(tenantId, state);
 
-    req.log.info({ email, tenantId }, 'New subscription created, API key generated');
-    await sendEmailNotice(
-      email,
-      'Your Sinna API Key is Ready! 🎉',
-      `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
-    );
+    req.log.info({ email, tenantId, apiKey }, 'New subscription created, API key generated');
+    
+    // Send email with API key
+    try {
+      await sendEmailNotice(
+        email,
+        'Your Sinna API Key is Ready! 🎉',
+        `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
+      );
+      req.log.info({ email }, 'API key email sent successfully');
+    } catch (emailError) {
+      // Log the API key prominently if email fails so it can be retrieved from logs
+      req.log.error({ 
+        email, 
+        apiKey, 
+        error: emailError instanceof Error ? emailError.message : String(emailError) 
+      }, 'CRITICAL: Failed to send API key email - API key logged below');
+      req.log.warn({ apiKey, email }, 'API KEY FOR MANUAL RETRIEVAL (email failed)');
+    }
   } catch (error) {
     req.log.error({ error, email }, 'Failed to create tenant and API key for new subscription');
     throw error;
