@@ -109,21 +109,32 @@ async function main() {
       );
       console.log('✅ Email sent successfully!');
       console.log(`📬 Check your inbox: ${EMAIL}`);
-      console.log('');
-      console.log('🔑 Your API Key (also in email):');
-      console.log(apiKey);
     } catch (emailError) {
       console.error('❌ Email failed:', emailError instanceof Error ? emailError.message : String(emailError));
       console.log('');
-      console.log('🔑 YOUR API KEY (email failed, but here it is):');
-      console.log('');
-      console.log(apiKey);
-      console.log('');
-      console.log('⚠️  Please save this key - email delivery failed!');
-      process.exit(1);
+      console.log('⚠️  Email delivery failed, but API key is below:');
     }
+    
+    // Always print API key for debugging (whether email succeeded or failed)
+    console.log('');
+    console.log('='.repeat(70));
+    console.log('🔑 YOUR API KEY (COPY THIS):');
+    console.log('='.repeat(70));
+    console.log(apiKey);
+    console.log('='.repeat(70));
+    console.log('');
+    console.log('📋 Usage:');
+    console.log(`   curl -H "X-API-Key: ${apiKey}" https://sinna.site/health`);
+    console.log(`   curl -H "X-API-Key: ${apiKey}" https://sinna.site/v1/me/subscription`);
+    console.log('');
   } catch (error) {
     console.error('❌ Error:', error instanceof Error ? error.message : String(error));
+    if (error instanceof Error && error.message.includes('DATABASE_URL')) {
+      console.log('');
+      console.log('💡 Tip: This script requires DATABASE_URL environment variable.');
+      console.log('   On Render: Environment variables are automatically available.');
+      console.log('   Locally: Set DATABASE_URL in your .env file or export it.');
+    }
     process.exit(1);
   }
 }
