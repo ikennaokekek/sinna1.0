@@ -308,17 +308,26 @@ async function handleInvoicePaymentFailed(
     );
   }
   
+  // Deactivate tenant and mark as inactive (grace period allows temporary access)
+  const graceDays = parseInt(process.env.GRACE_DAYS || '7', 10);
+  const graceUntil = new Date();
+  graceUntil.setDate(graceUntil.getDate() + graceDays);
+  
+  await pool.query(
+    'UPDATE tenants SET active = false, status = $1, grace_until = $2 WHERE id = $3',
+    ['inactive', graceUntil, tenantId]
+  );
+  
   const state = tenants.get(tenantId) || {
     active: false,
     usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
   } as TenantState;
   
   state.active = false;
-  const graceDays = parseInt(process.env.GRACE_DAYS || '7', 10);
-  state.graceUntil = Date.now() + graceDays * 24 * 3600 * 1000;
+  state.graceUntil = graceUntil.getTime();
   tenants.set(tenantId, state);
   
-  req.log.warn({ tenantId }, 'Payment failed - entered grace period');
+  req.log.warn({ tenantId, graceUntil }, 'Payment failed - entered grace period');
   const email = invoice.customer_email || process.env.NOTIFY_FALLBACK_EMAIL || '';
   if (email) {
     await sendEmailNotice(
@@ -472,10 +481,28 @@ async function handleSubscriptionUpdated(
   
   // Update tenant status based on subscription status
   const isActive = status === 'active' || status === 'trialing';
-  await pool.query(
-    'UPDATE tenants SET active = $1, stripe_subscription_id = $2 WHERE id = $3',
-    [isActive, stripeSubscriptionId, tenantId]
-  );
+  let tenantStatus: 'active' | 'inactive' | 'expired' = isActive ? 'active' : 'inactive';
+  let expiresAt: Date | null = null;
+  
+  // If subscription is active, extend expiration by 30 days
+  if (isActive) {
+    expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+  } else if (status === 'canceled' || status === 'unpaid') {
+    tenantStatus = 'expired';
+  }
+  
+  if (expiresAt) {
+    await pool.query(
+      'UPDATE tenants SET active = $1, status = $2, stripe_subscription_id = $3, expires_at = $4 WHERE id = $5',
+      [isActive, tenantStatus, stripeSubscriptionId, expiresAt, tenantId]
+    );
+  } else {
+    await pool.query(
+      'UPDATE tenants SET active = $1, status = $2, stripe_subscription_id = $3 WHERE id = $4',
+      [isActive, tenantStatus, stripeSubscriptionId, tenantId]
+    );
+  }
   
   const state = tenants.get(tenantId) || {
     active: false,
