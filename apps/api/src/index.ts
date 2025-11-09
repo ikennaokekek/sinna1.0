@@ -156,12 +156,10 @@ app.addHook('preHandler', async (req, reply) => {
   // Allow public metrics/docs, demo endpoint, billing pages, and Stripe webhooks to bypass auth
   // Test endpoints now require admin authentication
   if (
-    req.url === '/webhooks/stripe' ||
-    req.url === '/metrics' ||
-    req.url === '/v1/demo' ||
     req.url.startsWith('/api-docs') ||
     req.url.startsWith('/billing/success') ||
-    req.url.startsWith('/billing/cancel')
+    req.url.startsWith('/billing/cancel') ||
+    req.url.startsWith('/webhooks/stripe')
   ) {
     return;
   }
