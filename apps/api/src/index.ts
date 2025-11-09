@@ -664,40 +664,37 @@ function registerTopLevelRoutes(): void {
   }, async (req, reply) => {
     const sessionId = (req.query as { session_id?: string })?.session_id;
     
-    // Try to retrieve API key from database if webhook already processed
-    let apiKeyInfo = null;
-    if (sessionId && stripe) {
+    // Try to retrieve API key from Redis (stored by webhook handler)
+    let apiKey: string | null = null;
+    let customerEmail: string | null = null;
+    
+    if (sessionId) {
       try {
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        const email = session.customer_details?.email;
+        // Try to get API key from Redis (works for both test and live Stripe sessions)
+        apiKey = await redisConnection.get(`api_key:${sessionId}`).catch(() => null);
         
-        if (email) {
-          const { pool } = getDb();
-          const result = await pool.query(
-            `SELECT ak.key_hash, t.name, t.active 
-             FROM tenants t 
-             JOIN api_keys ak ON ak.tenant_id = t.id 
-             WHERE t.name = $1 
-             ORDER BY ak.created_at DESC 
-             LIMIT 1`,
-            [email]
-          );
-          
-          if (result.rows.length > 0) {
-            apiKeyInfo = {
-              email,
-              tenantActive: result.rows[0].active
-            };
+        // Also try to get customer email from Stripe for better messaging
+        if (stripe && !apiKey) {
+          try {
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+            customerEmail = session.customer_details?.email || null;
+          } catch {
+            // Ignore Stripe errors
           }
         }
       } catch (err) {
-        // Ignore errors - webhook might not have processed yet
+        // Redis might be unavailable - fall back to email-only message
+        app.log.warn({ sessionId, error: err }, 'Failed to retrieve API key from Redis');
       }
     }
     
-    const emailMessage = apiKeyInfo 
-      ? `Your API key has been sent to ${apiKeyInfo.email}. Check your email inbox.`
-      : 'Your API key is being generated and will be emailed to you shortly. Please check your email inbox.';
+    // Build HTML with or without API key display
+    const hasApiKey = !!apiKey;
+    const emailMessage = hasApiKey 
+      ? `Your API key is below. It has also been sent to your email.`
+      : customerEmail
+      ? `Your API key is being generated and will be emailed to ${customerEmail} shortly.`
+      : 'Your API key is being generated and will be emailed to you shortly.';
     
     return reply.type('text/html').send(`
       <html lang="en">
@@ -709,12 +706,12 @@ function registerTopLevelRoutes(): void {
           body {
             font-family: system-ui, -apple-system, sans-serif;
             text-align: center;
-            padding: 50px;
+            padding: 50px 20px;
             background-color: #f7f9fc;
             color: #333;
           }
           .card {
-            max-width: 480px;
+            max-width: 600px;
             margin: 40px auto;
             background: #fff;
             padding: 40px;
@@ -723,10 +720,79 @@ function registerTopLevelRoutes(): void {
           }
           h1 {
             color: #06b67b;
+            margin-bottom: 20px;
           }
           p {
             font-size: 16px;
             margin-top: 12px;
+            line-height: 1.6;
+          }
+          .api-key-container {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 2px solid #e9ecef;
+          }
+          .api-key-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 10px;
+            text-align: left;
+          }
+          .api-key-value {
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 14px;
+            background: #fff;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+            word-break: break-all;
+            color: #212529;
+            margin-bottom: 12px;
+            text-align: left;
+            user-select: all;
+          }
+          .copy-button {
+            background: #06b67b;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            width: 100%;
+          }
+          .copy-button:hover {
+            background: #05a068;
+          }
+          .copy-button:active {
+            background: #048a56;
+          }
+          .copy-button.copied {
+            background: #28a745;
+          }
+          .warning {
+            font-size: 14px;
+            color: #856404;
+            background: #fff3cd;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 20px;
+            text-align: left;
+          }
+          .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #06b67b;
+            text-decoration: none;
+            font-weight: 500;
+          }
+          .back-link:hover {
+            text-decoration: underline;
           }
         </style>
       </head>
@@ -734,9 +800,56 @@ function registerTopLevelRoutes(): void {
         <div class="card">
           <h1>✅ Payment Successful</h1>
           <p>${emailMessage}</p>
-          <p>Please check your inbox for confirmation.</p>
-          <a href="https://sinna.site" style="color:#06b67b;text-decoration:none;">Back to home</a>
+          ${hasApiKey ? `
+            <div class="api-key-container">
+              <div class="api-key-label">Your API Key:</div>
+              <div class="api-key-value" id="apiKey">${apiKey}</div>
+              <button class="copy-button" onclick="copyApiKey()" id="copyBtn">Copy API Key</button>
+            </div>
+            <div class="warning">
+              <strong>⚠️ Important:</strong> Save this API key securely. You won't be able to see it again after leaving this page. It has also been sent to your email as a backup.
+            </div>
+          ` : ''}
+          <a href="https://sinna.site" class="back-link">← Back to home</a>
         </div>
+        ${hasApiKey ? `
+        <script>
+          function copyApiKey() {
+            const apiKey = document.getElementById('apiKey').textContent;
+            navigator.clipboard.writeText(apiKey).then(() => {
+              const btn = document.getElementById('copyBtn');
+              const originalText = btn.textContent;
+              btn.textContent = '✓ Copied!';
+              btn.classList.add('copied');
+              setTimeout(() => {
+                btn.textContent = originalText;
+                btn.classList.remove('copied');
+              }, 2000);
+            }).catch(err => {
+              // Fallback for older browsers
+              const textArea = document.createElement('textarea');
+              textArea.value = apiKey;
+              textArea.style.position = 'fixed';
+              textArea.style.opacity = '0';
+              document.body.appendChild(textArea);
+              textArea.select();
+              try {
+                document.execCommand('copy');
+                const btn = document.getElementById('copyBtn');
+                btn.textContent = '✓ Copied!';
+                btn.classList.add('copied');
+                setTimeout(() => {
+                  btn.textContent = 'Copy API Key';
+                  btn.classList.remove('copied');
+                }, 2000);
+              } catch (err) {
+                alert('Failed to copy. Please select and copy manually.');
+              }
+              document.body.removeChild(textArea);
+            });
+          }
+        </script>
+        ` : ''}
       </body>
       </html>
     `);
