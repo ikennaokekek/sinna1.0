@@ -35,7 +35,7 @@ async function createCheckout() {
   
   const priceId = process.env.STRIPE_STANDARD_PRICE_ID || 'price_1SLDYEFOUj5aKuFKieTbbTX1';
   const email = process.env.TEST_EMAIL || 'road2yaadi@gmail.com';
-  const baseUrl = process.env.BASE_URL || 'https://sinna.site';
+  const baseUrl = process.env.BASE_URL_PUBLIC || 'https://sinna.site';
   
   console.log(`\n📧 Customer Email: ${email}`);
   console.log(`💰 Price ID: ${priceId}`);

@@ -70,7 +70,7 @@ export async function qwenInstruct(promptPayload: QwenPromptPayload): Promise<Qw
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.BASE_URL || 'https://sinna.site',
+        'HTTP-Referer': process.env.BASE_URL_PUBLIC || 'https://sinna.site',
         'X-Title': 'Sinna 1.0 Accessibility API',
       },
       body: JSON.stringify(payload),

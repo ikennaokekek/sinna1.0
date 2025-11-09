@@ -268,9 +268,9 @@ app.post('/test-email', {
     // If custom text is provided, append the API key to it
     let finalText;
     if (text) {
-      finalText = `${text}\n\nYour Production API Key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`;
+      finalText = `${text}\n\nYour Production API Key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`;
     } else {
-      finalText = `✅ Success! Your Render app can send email now.\n\nYour Production API Key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nThis is your actual production-ready API key! 🚀`;
+      finalText = `✅ Success! Your Render app can send email now.\n\nYour Production API Key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nThis is your actual production-ready API key! 🚀`;
     }
     
     await sendEmailNotice(testEmail, testSubject, finalText);
@@ -897,7 +897,7 @@ async function start() {
             email: 'motion24inc@gmail.com'
           }
         },
-        servers: [{ url: process.env.BASE_URL || (process.env.NODE_ENV === 'production' ? 'https://sinna.site' : 'http://localhost:4000') }],
+        servers: [{ url: process.env.BASE_URL_PUBLIC || (process.env.NODE_ENV === 'production' ? 'https://sinna.site' : 'http://localhost:4000') }],
         tags: [
           { name: 'System', description: 'System health and monitoring endpoints' },
           { name: 'Jobs', description: 'Video processing job management' },

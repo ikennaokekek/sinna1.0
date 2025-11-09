@@ -58,7 +58,7 @@ export function registerBillingRoutes(app: FastifyInstance, stripe: Stripe | nul
         return res.code(503).send({ success: false, error: ErrorCodes.MISSING_PRICE });
       }
       
-      const baseUrl = process.env.BASE_URL || 'https://sinna.site';
+      const baseUrl = process.env.BASE_URL_PUBLIC || 'https://sinna.site';
       // Stripe minimum is 30 minutes, using 35 to account for clock skew
       const expiresAt = Math.floor(Date.now() / 1000) + (35 * 60); // 35 minutes from now
       

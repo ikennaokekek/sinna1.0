@@ -16,7 +16,9 @@ services:
         value: production
       - key: PORT
         value: 10000
-      - key: BASE_URL
+      - key: BASE_URL_PUBLIC
+        value: https://sinna.site
+      - key: BASE_URL_PRIVATE
         fromService:
           type: web
           name: sinna-api
@@ -142,7 +144,9 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: BASE_URL
+      - key: BASE_URL_PUBLIC
+        value: https://sinna.site
+      - key: BASE_URL_PRIVATE
         fromService:
           type: web
           name: sinna-api
