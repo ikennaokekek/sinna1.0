@@ -18,7 +18,7 @@ export const EnvSchema = z
 
     STRIPE_SECRET_KEY: z.string().optional(),
     STRIPE_WEBHOOK_SECRET: z.string().optional(),
-    STRIPE_STANDARD_PRICE_ID: z.string().min(1, 'STRIPE_STANDARD_PRICE_ID is required'),
+    STRIPE_STANDARD_PRICE_ID: z.string().optional(),
 
     CLOUDINARY_URL: z.string().url('CLOUDINARY_URL must be a valid URL'),
 
