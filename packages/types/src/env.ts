@@ -29,24 +29,12 @@ export const EnvSchema = z
     SENDGRID_API_KEY: z.string().optional(),
     NOTIFY_FROM_EMAIL: z.string().optional(),
 
-    WEBHOOK_SIGNING_SECRET: z.string().min(1, 'WEBHOOK_SIGNING_SECRET is required'),
+    WEBHOOK_SIGNING_SECRET: z.string().min(1, 'WEBHOOK_SIGNING_SECRET is required').optional(),
     WEBHOOK_HMAC_HEADER: z.string().optional(),
   })
   .refine((vals) => Boolean(vals.ASSEMBLYAI_API_KEY) || Boolean(vals.OPENAI_API_KEY), {
     message: 'Either ASSEMBLYAI_API_KEY or OPENAI_API_KEY must be set',
     path: ['ASSEMBLYAI_API_KEY'],
-  })
-  .refine((vals) => Boolean(vals.STRIPE_SECRET_KEY), {
-    message: 'STRIPE_SECRET_KEY must be set',
-    path: ['STRIPE_SECRET_KEY'],
-  })
-  .refine((vals) => Boolean(vals.STRIPE_WEBHOOK_SECRET), {
-    message: 'STRIPE_WEBHOOK_SECRET must be set',
-    path: ['STRIPE_WEBHOOK_SECRET'],
-  })
-  .refine((vals) => Boolean(vals.RESEND_API_KEY) || Boolean(vals.SENDGRID_API_KEY), {
-    message: 'Either RESEND_API_KEY or SENDGRID_API_KEY must be set for email functionality',
-    path: ['RESEND_API_KEY'],
   });
 
 export type Env = z.infer<typeof EnvSchema>;
