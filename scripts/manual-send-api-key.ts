@@ -4,8 +4,9 @@
  * Sends API key email directly without webhook
  */
 
-import { sendEmailNotice } from '../apps/api/src/lib/email';
+import { sendApiKeyEmail } from '../apps/api/src/utils/email';
 import { getDb, seedTenantAndApiKey } from '../apps/api/src/lib/db';
+import { createApiKey } from '../apps/api/src/utils/keys';
 
 const EMAIL = process.env.TEST_EMAIL || process.argv[2] || 'ikennaokeke1996@gmail.com';
 
