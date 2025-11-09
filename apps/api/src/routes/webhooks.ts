@@ -229,7 +229,7 @@ async function handleCheckoutSessionCompleted(
     await sendEmailNotice(
       email,
       'Your Sinna API Key is Ready! 🎉',
-      `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
+      `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
     );
   } catch (error) {
     req.log.error({ error, email }, 'Failed to create tenant and API key for new subscription');

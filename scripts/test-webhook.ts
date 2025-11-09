@@ -42,8 +42,8 @@ async function testWebhook() {
         quantity: 1,
       },
     ],
-    success_url: `${process.env.BASE_URL || 'https://sinna.site'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${process.env.BASE_URL || 'https://sinna.site'}/billing/cancel`,
+    success_url: `${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}/billing/cancel`,
     customer_email: TEST_EMAIL,
     metadata: {
       test: 'true',

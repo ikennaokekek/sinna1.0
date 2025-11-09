@@ -50,7 +50,7 @@ async function main() {
     await sendEmailNotice(
       email,
       'Your Sinna API Key is Ready! 🎉',
-      `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
+      `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
     );
     
     console.log('✅ Email sent!');
@@ -96,7 +96,7 @@ async function main() {
     await sendEmailNotice(
       email,
       'Your Sinna API Key is Ready! 🎉',
-      `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
+      `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
     );
     
     console.log('✅ Email sent!');
@@ -132,14 +132,14 @@ async function main() {
   await sendEmailNotice(
     email,
     'Your Sinna API Key is Ready! 🎉',
-    `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nNote: This is a new API key. Your previous key (if any) is still valid.`
+    `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nNote: This is a new API key. Your previous key (if any) is still valid.`
   );
   
   console.log('✅ Email sent!');
   console.log(`\n📋 Summary:`);
   console.log(`   Email: ${email}`);
   console.log(`   API Key: ${apiKey}`);
-  console.log(`   Base URL: ${process.env.BASE_URL || 'https://sinna.site'}`);
+  console.log(`   Base URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}`);
 }
 
 main().catch((err) => {

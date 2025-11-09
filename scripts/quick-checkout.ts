@@ -8,7 +8,7 @@ import Stripe from 'stripe';
 
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || '';
 const STRIPE_STANDARD_PRICE_ID = process.env.STRIPE_STANDARD_PRICE_ID || process.env.STRIPE_STANDARD_PRICE_ID || 'price_1SLjdZFOUj5aKuFKFpV2ANpe';
-const BASE_URL = process.env.BASE_URL || 'https://sinna.site';
+const BASE_URL = process.env.BASE_URL_PUBLIC || 'https://sinna.site';
 const TEST_EMAIL = process.env.TEST_EMAIL || 'ikennaokeke1996@gmail.com';
 
 if (!STRIPE_SECRET_KEY) {

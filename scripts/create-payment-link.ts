@@ -8,7 +8,7 @@ import Stripe from 'stripe';
 
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_LIVE_SECRET_KEY;
 const STRIPE_STANDARD_PRICE_ID = process.env.STRIPE_STANDARD_PRICE_ID || process.env.STRIPE_LIVE_PRICE_ID;
-const BASE_URL = process.env.BASE_URL || 'https://sinna.site';
+const BASE_URL = process.env.BASE_URL_PUBLIC || 'https://sinna.site';
 
 if (!STRIPE_SECRET_KEY) {
   console.error('❌ STRIPE_SECRET_KEY required');
