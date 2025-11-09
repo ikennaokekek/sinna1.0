@@ -36,9 +36,19 @@ export async function runMigrations(): Promise<void> {
   const { pool } = getDb();
   const fs = await import('fs');
   const path = await import('path');
-  const migPath = path.resolve(__dirname, '..', '..', 'migrations', '001_init.sql');
-  const sql = fs.readFileSync(migPath, 'utf-8');
-  await pool.query(sql);
+  const migrationsDir = path.resolve(__dirname, '..', '..', 'migrations');
+  
+  // Get all .sql files and sort them
+  const files = fs.readdirSync(migrationsDir)
+    .filter((f: string) => f.endsWith('.sql'))
+    .sort();
+  
+  // Run each migration in order
+  for (const file of files) {
+    const migPath = path.join(migrationsDir, file);
+    const sql = fs.readFileSync(migPath, 'utf-8');
+    await pool.query(sql);
+  }
 }
 
 export async function seedTenantAndApiKey(params: { tenantName: string; plan?: string; apiKeyHash: string }): Promise<{ tenantId: string }>{
