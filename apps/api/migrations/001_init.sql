@@ -9,13 +9,11 @@ create table if not exists tenants(
   active boolean default false,
   grace_until timestamptz,
   plan text default 'standard',
-  stripe_customer_id text unique,
-  stripe_subscription_id text,
   created_at timestamptz default now()
 );
 
-create index if not exists idx_tenants_stripe_customer on tenants(stripe_customer_id);
-create index if not exists idx_tenants_stripe_subscription on tenants(stripe_subscription_id);
+-- Note: stripe_customer_id and stripe_subscription_id are added in migration 003
+-- Indexes for these columns are also created in migration 003
 
 create table if not exists api_keys(
   key_hash text primary key,
