@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "node --max-old-space-size=2048 ./node_modules/typescript/bin/tsc -p tsconfig.json",
+    "build": "NODE_OPTIONS='--max-old-space-size=2048' npx tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "vitest run",
     "migrate": "node -e \"(async()=>{const{runMigrations}=await import('./dist/lib/db.js');await runMigrations();console.log('migrations done')})().catch(e=>{console.error(e);process.exit(1)})\"",
