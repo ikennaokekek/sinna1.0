@@ -737,18 +737,54 @@ function registerTopLevelRoutes(): void {
       hide: true, // Hide from Swagger UI
       response: {
         200: {
-          type: 'object',
-          properties: {
-            success: { type: 'boolean' },
-            message: { type: 'string' }
-          }
+          type: 'string',
+          description: 'HTML page'
         }
       }
     }
-  }, async () => ({
-    success: false,
-    message: 'Payment was cancelled. You can try again anytime.'
-  }));
+  }, async (req, reply) => {
+    return reply.type('text/html').send(`
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Payment Cancelled</title>
+        <style>
+          body {
+            font-family: system-ui, -apple-system, sans-serif;
+            text-align: center;
+            padding: 50px;
+            background-color: #fff8f8;
+            color: #333;
+          }
+          .card {
+            max-width: 480px;
+            margin: 40px auto;
+            background: #fff;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+          }
+          h1 {
+            color: #e63946;
+          }
+          p {
+            font-size: 16px;
+            margin-top: 12px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>❌ Payment Cancelled</h1>
+          <p>Your payment was cancelled or did not complete successfully.</p>
+          <p>If this was a mistake, you can try again.</p>
+          <a href="https://sinna.site" style="color:#e63946;text-decoration:none;">Return Home</a>
+        </div>
+      </body>
+      </html>
+    `);
+  });
 
   // GET /v1/me/usage
   app.get('/v1/me/usage', {
