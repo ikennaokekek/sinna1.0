@@ -12,7 +12,7 @@ import IORedis from 'ioredis';
 import crypto from 'crypto';
 // duplicate imports removed
 import { Queue } from 'bullmq';
-import { redisConnection } from './lib/redis';
+import { redisConnection, verifyRedisConnection } from './lib/redis';
 import Stripe from 'stripe';
 import * as Sentry from '@sentry/node';
 import fastifyRawBody from 'fastify-raw-body';
@@ -122,8 +122,7 @@ try {
     }
   }
 } catch (e) {
-  // eslint-disable-next-line no-console
-  console.error(e);
+  app.log.error(e);
   process.exit(1);
 }
 
@@ -154,13 +153,15 @@ const failuresTotal = new Counter({ name: 'failures_total', help: 'Total failure
 
 // Auth preHandler: validate API key, check subscription/grace, attach tenantId
 app.addHook('preHandler', async (req, reply) => {
-  // Allow public metrics/docs, demo endpoint, and Stripe webhooks to bypass auth
+  // Allow public metrics/docs, demo endpoint, billing pages, and Stripe webhooks to bypass auth
   // Test endpoints now require admin authentication
   if (
     req.url === '/webhooks/stripe' ||
     req.url === '/metrics' ||
     req.url === '/v1/demo' ||
-    req.url.startsWith('/api-docs')
+    req.url.startsWith('/api-docs') ||
+    req.url.startsWith('/billing/success') ||
+    req.url.startsWith('/billing/cancel')
   ) {
     return;
   }
@@ -233,13 +234,14 @@ app.post('/test-email', {
     }
   }
 }, async (req, reply) => {
-  // Admin authentication check
-  const adminKey = process.env.ADMIN_API_KEY;
-  if (adminKey) {
-    const providedKey = req.headers['x-admin-key'];
-    if (providedKey !== adminKey) {
-      return reply.code(403).send({ success: false, error: 'Forbidden: Admin access required' });
-    }
+  // Admin authentication check (always enforced; disabled by default in production)
+  if (process.env.NODE_ENV === 'production' && process.env.ADMIN_ENDPOINTS_ENABLED !== '1') {
+    return reply.code(403).send({ success: false, error: 'Forbidden: Admin endpoints disabled' });
+  }
+  const adminKey = process.env.ADMIN_API_KEY || '';
+  const providedKey = (req.headers['x-admin-key'] as string | undefined) || '';
+  if (!adminKey || providedKey !== adminKey) {
+    return reply.code(403).send({ success: false, error: 'Forbidden: Admin access required' });
   }
   
   try {
@@ -322,13 +324,14 @@ app.get('/email-status', {
     }
   }
 }, async (req, reply) => {
-  // Admin authentication check
-  const adminKey = process.env.ADMIN_API_KEY;
-  if (adminKey) {
-    const providedKey = req.headers['x-admin-key'];
-    if (providedKey !== adminKey) {
-      return reply.code(403).send({ success: false, error: 'Forbidden: Admin access required' });
-    }
+  // Admin authentication check (always enforced; disabled by default in production)
+  if (process.env.NODE_ENV === 'production' && process.env.ADMIN_ENDPOINTS_ENABLED !== '1') {
+    return reply.code(403).send({ success: false, error: 'Forbidden: Admin endpoints disabled' });
+  }
+  const adminKey = process.env.ADMIN_API_KEY || '';
+  const providedKey = (req.headers['x-admin-key'] as string | undefined) || '';
+  if (!adminKey || providedKey !== adminKey) {
+    return reply.code(403).send({ success: false, error: 'Forbidden: Admin access required' });
   }
   
   const resendKey = process.env.RESEND_API_KEY;
@@ -526,7 +529,7 @@ function registerRoutes(): void {
   registerWebhookRoutes(app, stripe, tenants);
   registerSubscriptionRoutes(app);
   // Note: redis will be set in start() function, routes will use it when called
-}
+  }
 
 // Register all top-level routes (moved from top-level to ensure Swagger captures them)
 function registerTopLevelRoutes(): void {
@@ -573,8 +576,38 @@ function registerTopLevelRoutes(): void {
   }, async (req, reply) => {
     const key = req.headers['x-api-key'];
     if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
-    return { ok: true, uptime: process.uptime() };
-  });
+    
+    // Check Redis status
+    const redisStatus = {
+      configured: !!process.env.REDIS_URL,
+      connected: false,
+      queues: false,
+    };
+    
+    if (redisStatus.configured) {
+      try {
+        // Check BullMQ Redis connection
+        const pingResult = await redisConnection.ping().catch(() => null);
+        redisStatus.connected = pingResult === 'PONG';
+        
+        // Check if queues are accessible
+        try {
+          await captionsQ.getWaitingCount();
+          redisStatus.queues = true;
+        } catch {
+          redisStatus.queues = false;
+        }
+      } catch {
+        // Redis not connected
+      }
+    }
+    
+    return { 
+      ok: true, 
+      uptime: process.uptime(),
+      redis: redisStatus
+    };
+});
 
   // GET /v1/demo
   app.get('/v1/demo', {
@@ -587,11 +620,100 @@ function registerTopLevelRoutes(): void {
           properties: {
             ok: { type: 'boolean' },
             now: { type: 'string', format: 'date-time' }
+      }
+    }
+    }
+    }
+  }, async () => ({ ok: true, now: new Date().toISOString() }));
+
+  // GET /billing/success - Public success page after Stripe payment
+  app.get('/billing/success', {
+    schema: {
+      description: 'Success page after Stripe checkout completion',
+      tags: ['Billing'],
+      hide: true, // Hide from Swagger UI
+      querystring: {
+        type: 'object',
+        properties: {
+          session_id: { type: 'string' }
+        }
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            message: { type: 'string' },
+            session_id: { type: 'string', nullable: true },
+            note: { type: 'string', nullable: true }
           }
         }
       }
     }
-  }, async () => ({ ok: true, now: new Date().toISOString() }));
+  }, async (req, reply) => {
+    const sessionId = (req.query as { session_id?: string })?.session_id;
+    
+    // Try to retrieve API key from database if webhook already processed
+    let apiKeyInfo = null;
+    if (sessionId && stripe) {
+      try {
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        const email = session.customer_details?.email;
+        
+        if (email) {
+          const { pool } = getDb();
+          const result = await pool.query(
+            `SELECT ak.key_hash, t.name, t.active 
+             FROM tenants t 
+             JOIN api_keys ak ON ak.tenant_id = t.id 
+             WHERE t.name = $1 
+             ORDER BY ak.created_at DESC 
+             LIMIT 1`,
+            [email]
+          );
+          
+          if (result.rows.length > 0) {
+            apiKeyInfo = {
+              email,
+              tenantActive: result.rows[0].active
+            };
+          }
+        }
+      } catch (err) {
+        // Ignore errors - webhook might not have processed yet
+      }
+    }
+    
+    return reply.send({
+      success: true,
+      message: 'Payment successful! 🎉',
+      session_id: sessionId || null,
+      note: apiKeyInfo 
+        ? `Your API key has been sent to ${apiKeyInfo.email}. Check your email inbox.`
+        : 'Your API key is being generated and will be emailed to you shortly. Please check your email inbox.'
+    });
+  });
+
+  // GET /billing/cancel - Public cancel page after Stripe checkout cancellation
+  app.get('/billing/cancel', {
+    schema: {
+      description: 'Cancel page after Stripe checkout cancellation',
+      tags: ['Billing'],
+      hide: true, // Hide from Swagger UI
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            message: { type: 'string' }
+          }
+        }
+      }
+    }
+  }, async () => ({
+    success: false,
+    message: 'Payment was cancelled. You can try again anytime.'
+  }));
 
   // GET /v1/me/usage
   app.get('/v1/me/usage', {
@@ -614,8 +736,8 @@ function registerTopLevelRoutes(): void {
                 jobs: { type: 'number' },
                 storage: { type: 'number' },
                 cap: { type: 'number' }
-              }
-            }
+    }
+  }
           }
         },
         401: {
@@ -632,15 +754,15 @@ function registerTopLevelRoutes(): void {
     if (!tenantId) {
       return res.code(401).send({ success: false, error: 'unauthorized' });
     }
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
     const state = tenants.get(tenantId) || {
       active: false,
       usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
     } as TenantState;
-    res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
-  });
+  res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
+});
 
   // GET /v1/files/:id:sign
   app.get('/v1/files/:id:sign', {
@@ -694,7 +816,7 @@ function registerTopLevelRoutes(): void {
           properties: {
             success: { type: 'boolean' },
             error: { type: 'string' }
-          }
+    }
         },
         500: {
           type: 'object',
@@ -721,7 +843,7 @@ function registerTopLevelRoutes(): void {
       const ttl = params.ttl ?? 3600;
       const url = await getSignedGetUrl(params.id, ttl);
       return { success: true, data: { url, expires_in: ttl } };
-    } catch (error) {
+      } catch (error) {
       if (error instanceof z.ZodError) {
         return res.code(400).send({ success: false, error: 'Invalid parameters', details: error.errors });
       }
@@ -809,6 +931,24 @@ async function start() {
       await runMigrations();
       app.log.info('DB migrations completed');
     }
+    
+    // Verify BullMQ Redis connection (used by queues)
+    const redisUrl = process.env.REDIS_URL;
+    if (redisUrl) {
+      try {
+        const bullMQRedisOk = await verifyRedisConnection();
+        if (bullMQRedisOk) {
+          app.log.info('✅ BullMQ Redis connection verified (queues will work)');
+        } else {
+          app.log.warn('⚠️  BullMQ Redis connection failed (queues may not work)');
+        }
+      } catch (err) {
+        app.log.warn({ err }, '⚠️  BullMQ Redis verification failed (queues may not work)');
+      }
+    } else {
+      app.log.warn('⚠️  REDIS_URL not set; BullMQ queues will not work');
+    }
+    
     // Initialize Redis if configured; fallback to memory limiter on failure
     if (redisUrl) {
       const client = new IORedis(redisUrl, {
@@ -855,8 +995,7 @@ async function start() {
     registerJobRoutes(app, { captions: captionsQ, ad: adQ, color: colorQ, videoTransform: videoTransformQ }, redis, queueDepth, failuresTotal);
     
     // Sanity check: print environment
-    // eslint-disable-next-line no-console
-    console.log('env:', process.env.NODE_ENV);
+    app.log.info({ env: process.env.NODE_ENV }, 'Environment');
     // Startup environment info (no secrets)
     app.log.info({ env: process.env.NODE_ENV || 'development', stripeLiveKeyPresent: isProduction() ? !!process.env.STRIPE_SECRET_KEY_LIVE : false }, 'Startup environment');
     await app.listen({ port, host: '0.0.0.0' });

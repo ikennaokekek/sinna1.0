@@ -59,11 +59,15 @@ export function registerBillingRoutes(app: FastifyInstance, stripe: Stripe | nul
       }
       
       const baseUrl = process.env.BASE_URL || 'https://sinna.site';
+      // Stripe minimum is 30 minutes, using 35 to account for clock skew
+      const expiresAt = Math.floor(Date.now() / 1000) + (35 * 60); // 35 minutes from now
+      
       const session = await stripe.checkout.sessions.create({
         mode: 'subscription',
         line_items: [{ price: priceId, quantity: 1 }],
         success_url: `${baseUrl}/billing/success`,
         cancel_url: `${baseUrl}/billing/cancel`,
+        expires_at: expiresAt, // Expires in 35 minutes
         client_reference_id: tenantId,
         subscription_data: {
           metadata: { tenantId },
