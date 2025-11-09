@@ -5,6 +5,7 @@ import { sendEmailNotice } from '../lib/email';
 import { sendErrorResponse, ErrorCodes } from '../lib/errors';
 import { AuthenticatedRequest, TenantState } from '../types';
 import { performanceMonitor } from '../lib/logger';
+import { redisConnection } from '../lib/redis';
 
 export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | null, tenants: Map<string, TenantState>): void {
   app.post('/webhooks/stripe', {
@@ -252,6 +253,22 @@ async function handleCheckoutSessionCompleted(
     tenants.set(tenantId, state);
 
     req.log.info({ email, tenantId, apiKey }, 'New subscription created, API key generated');
+    
+    // Store API key in Redis for success page display (expires in 24 hours)
+    // Works for both test and live Stripe sessions
+    const sessionId = session.id;
+    if (sessionId) {
+      try {
+        await redisConnection.setex(`api_key:${sessionId}`, 86400, apiKey); // 24 hours = 86400 seconds
+        req.log.info({ sessionId }, 'API key stored in Redis for success page');
+      } catch (redisError) {
+        // Don't fail webhook if Redis storage fails - email will still be sent
+        req.log.warn({ 
+          sessionId, 
+          error: redisError instanceof Error ? redisError.message : String(redisError) 
+        }, 'Failed to store API key in Redis (will still send email)');
+      }
+    }
     
     // Send email with API key
     try {
