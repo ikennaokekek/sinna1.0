@@ -230,11 +230,8 @@ async function handleCheckoutSessionCompleted(
     
     // Send email with API key
     try {
-      await sendEmailNotice(
-        email,
-        'Your Sinna API Key is Ready! 🎉',
-        `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
-      );
+      const { sendApiKeyEmail } = await import('../utils/email');
+      await sendApiKeyEmail(email, apiKey);
       req.log.info({ email }, 'API key email sent successfully');
     } catch (emailError) {
       // Log the API key prominently if email fails so it can be retrieved from logs
