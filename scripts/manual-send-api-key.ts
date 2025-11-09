@@ -41,14 +41,8 @@ async function main() {
         // API key exists but we can't retrieve it (it's hashed)
         // Generate a new one
         console.log('⚠️  API key exists but is hashed. Generating new key...');
-        const crypto = await import('crypto');
-        const randomBytes = crypto.randomBytes(24);
-        const randomString = randomBytes.toString('base64')
-          .replace(/[+/=]/g, '')
-          .toLowerCase()
-          .substring(0, 32);
-        apiKey = `sk_live_${randomString}`;
-        const hashed = crypto.createHash('sha256').update(apiKey).digest('hex');
+        const { apiKey: newKey, hashed } = createApiKey();
+        apiKey = newKey;
         
         await pool.query(
           'INSERT INTO api_keys (tenant_id, key_hash) VALUES ($1, $2)',
@@ -57,14 +51,8 @@ async function main() {
         console.log('✅ New API key generated');
       } else {
         // No API key, generate one
-        const crypto = await import('crypto');
-        const randomBytes = crypto.randomBytes(24);
-        const randomString = randomBytes.toString('base64')
-          .replace(/[+/=]/g, '')
-          .toLowerCase()
-          .substring(0, 32);
-        apiKey = `sk_live_${randomString}`;
-        const hashed = crypto.createHash('sha256').update(apiKey).digest('hex');
+        const { apiKey: newKey, hashed } = createApiKey();
+        apiKey = newKey;
         
         await pool.query(
           'INSERT INTO api_keys (tenant_id, key_hash) VALUES ($1, $2)',
@@ -75,14 +63,8 @@ async function main() {
     } else {
       // Create new tenant and API key
       console.log('📝 Creating new tenant...');
-      const crypto = await import('crypto');
-      const randomBytes = crypto.randomBytes(24);
-      const randomString = randomBytes.toString('base64')
-        .replace(/[+/=]/g, '')
-        .toLowerCase()
-        .substring(0, 32);
-      apiKey = `sk_live_${randomString}`;
-      const hashed = crypto.createHash('sha256').update(apiKey).digest('hex');
+      const { apiKey: newKey, hashed } = createApiKey();
+      apiKey = newKey;
 
       const result = await seedTenantAndApiKey({
         tenantName: EMAIL,
@@ -102,11 +84,7 @@ async function main() {
     console.log('');
 
     try {
-      await sendEmailNotice(
-        EMAIL,
-        'Your Sinna API Key is Ready! 🎉',
-        `Your API key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`
-      );
+      await sendApiKeyEmail(EMAIL, apiKey);
       console.log('✅ Email sent successfully!');
       console.log(`📬 Check your inbox: ${EMAIL}`);
     } catch (emailError) {
