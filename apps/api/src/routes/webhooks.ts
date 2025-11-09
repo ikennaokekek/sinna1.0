@@ -178,15 +178,8 @@ async function handleCheckoutSessionCompleted(
   }
 
   try {
-    const crypto = await import('crypto');
-    const randomBytes = crypto.randomBytes(24);
-    const randomString = randomBytes.toString('base64')
-      .replace(/[+/=]/g, '')
-      .toLowerCase()
-      .substring(0, 32);
-    
-    const apiKey = `sk_live_${randomString}`;
-    const hashed = crypto.createHash('sha256').update(apiKey).digest('hex');
+    const { createApiKey } = await import('../utils/keys');
+    const { apiKey, hashed } = createApiKey();
 
     const { tenantId } = await seedTenantAndApiKey({
       tenantName: email,
