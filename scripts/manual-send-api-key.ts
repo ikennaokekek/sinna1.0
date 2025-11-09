@@ -42,8 +42,9 @@ async function main() {
         // API key exists but we can't retrieve it (it's hashed)
         // Generate a new one
         console.log('⚠️  API key exists but is hashed. Generating new key...');
-        const { apiKey: newKey, hashed } = createApiKey();
-        apiKey = newKey;
+        const keyResult = createApiKey();
+        apiKey = keyResult.apiKey;
+        const hashed = keyResult.hashed;
         
         await pool.query(
           'INSERT INTO api_keys (tenant_id, key_hash) VALUES ($1, $2)',
@@ -52,8 +53,9 @@ async function main() {
         console.log('✅ New API key generated');
       } else {
         // No API key, generate one
-        const { apiKey: newKey, hashed } = createApiKey();
-        apiKey = newKey;
+        const keyResult = createApiKey();
+        apiKey = keyResult.apiKey;
+        const hashed = keyResult.hashed;
         
         await pool.query(
           'INSERT INTO api_keys (tenant_id, key_hash) VALUES ($1, $2)',
@@ -64,8 +66,9 @@ async function main() {
     } else {
       // Create new tenant and API key
       console.log('📝 Creating new tenant...');
-      const { apiKey: newKey, hashed } = createApiKey();
-      apiKey = newKey;
+      const keyResult = createApiKey();
+      apiKey = keyResult.apiKey;
+      const hashed = keyResult.hashed;
 
       const result = await seedTenantAndApiKey({
         tenantName: EMAIL,
