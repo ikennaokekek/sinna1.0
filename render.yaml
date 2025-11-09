@@ -5,7 +5,7 @@ services:
     runtime: node
     plan: standard
     region: frankfurt
-    buildCommand: pnpm i --frozen-lockfile && pnpm build
+    buildCommand: pnpm i --frozen-lockfile && NODE_OPTIONS='--max-old-space-size=2048' pnpm build
     startCommand: node apps/api/dist/index.js
     healthCheckPath: /health
     autoDeploy: true
@@ -136,7 +136,7 @@ services:
     runtime: node
     plan: standard
     region: frankfurt
-    buildCommand: pnpm i --frozen-lockfile && pnpm build
+    buildCommand: pnpm i --frozen-lockfile && NODE_OPTIONS='--max-old-space-size=2048' pnpm build
     startCommand: node apps/worker/dist/index.js
     autoDeploy: true
     
