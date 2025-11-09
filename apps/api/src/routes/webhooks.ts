@@ -148,6 +148,30 @@ async function handleInvoicePaymentSucceeded(
   }
   
   const tenantId = rows[0].id as string;
+  
+  // Update subscription expiration to 30 days from now (renewal)
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
+  
+  // Update tenant status and expiration
+  await pool.query(
+    'UPDATE tenants SET status = $1, active = $2, expires_at = $3, grace_until = NULL WHERE id = $4',
+    ['active', true, expiresAt, tenantId]
+  );
+  
+  // Optional: Rotate API key on renewal (uncomment to enable)
+  // const { createApiKey } = await import('../utils/keys');
+  // const { apiKey: newKey, hashed: newHash } = createApiKey();
+  // await pool.query(
+  //   'INSERT INTO api_keys (key_hash, tenant_id) VALUES ($1, $2)',
+  //   [newHash, tenantId]
+  // );
+  // const { sendApiKeyEmail } = await import('../utils/email');
+  // const tenantEmail = (await pool.query('SELECT name FROM tenants WHERE id = $1', [tenantId])).rows[0]?.name;
+  // if (tenantEmail) {
+  //   await sendApiKeyEmail(tenantEmail, newKey, { note: 'Your API key has been rotated due to subscription renewal.' });
+  // }
+  
   const state = tenants.get(tenantId) || {
     active: false,
     usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
@@ -161,7 +185,7 @@ async function handleInvoicePaymentSucceeded(
   state.usage.storage = 0;
   tenants.set(tenantId, state);
   
-  req.log.info({ tenantId, stripeCustomerId }, 'Invoice payment succeeded, tenant activated');
+  req.log.info({ tenantId, stripeCustomerId, expiresAt }, 'Invoice payment succeeded, tenant activated and expiration updated');
 }
 
 async function handleCheckoutSessionCompleted(
@@ -190,24 +214,32 @@ async function handleCheckoutSessionCompleted(
     const stripeCustomerId = typeof session.customer === 'string' ? session.customer : session.customer?.id || '';
     const stripeSubscriptionId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id || '';
     
-    if (stripeCustomerId || stripeSubscriptionId) {
-      const { pool } = getDb();
-      if (stripeCustomerId && stripeSubscriptionId) {
-        await pool.query(
-          'UPDATE tenants SET stripe_customer_id = $1, stripe_subscription_id = $2 WHERE id = $3',
-          [stripeCustomerId, stripeSubscriptionId, tenantId]
-        );
-      } else if (stripeCustomerId) {
-        await pool.query(
-          'UPDATE tenants SET stripe_customer_id = $1 WHERE id = $2',
-          [stripeCustomerId, tenantId]
-        );
-      } else if (stripeSubscriptionId) {
-        await pool.query(
-          'UPDATE tenants SET stripe_subscription_id = $1 WHERE id = $2',
-          [stripeSubscriptionId, tenantId]
-        );
-      }
+    // Set subscription expiration to 30 days from now (standard billing cycle)
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30);
+    
+    const { pool } = getDb();
+    if (stripeCustomerId && stripeSubscriptionId) {
+      await pool.query(
+        'UPDATE tenants SET stripe_customer_id = $1, stripe_subscription_id = $2, status = $3, active = $4, expires_at = $5 WHERE id = $6',
+        [stripeCustomerId, stripeSubscriptionId, 'active', true, expiresAt, tenantId]
+      );
+    } else if (stripeCustomerId) {
+      await pool.query(
+        'UPDATE tenants SET stripe_customer_id = $1, status = $2, active = $3, expires_at = $4 WHERE id = $5',
+        [stripeCustomerId, 'active', true, expiresAt, tenantId]
+      );
+    } else if (stripeSubscriptionId) {
+      await pool.query(
+        'UPDATE tenants SET stripe_subscription_id = $1, status = $2, active = $3, expires_at = $4 WHERE id = $5',
+        [stripeSubscriptionId, 'active', true, expiresAt, tenantId]
+      );
+    } else {
+      // No Stripe IDs yet, but still set status and expiration
+      await pool.query(
+        'UPDATE tenants SET status = $1, active = $2, expires_at = $3 WHERE id = $4',
+        ['active', true, expiresAt, tenantId]
+      );
     }
 
     const state = tenants.get(tenantId) || {
@@ -348,10 +380,10 @@ async function handleSubscriptionDeleted(
   
   const tenantId = rows[0].id as string;
   
-  // Deactivate tenant and clear subscription ID
+  // Deactivate tenant, mark as expired, and clear subscription ID
   await pool.query(
-    'UPDATE tenants SET active = false, stripe_subscription_id = NULL WHERE id = $1',
-    [tenantId]
+    'UPDATE tenants SET active = false, status = $1, stripe_subscription_id = NULL WHERE id = $2',
+    ['expired', tenantId]
   );
   
   const state = tenants.get(tenantId) || {
@@ -363,7 +395,7 @@ async function handleSubscriptionDeleted(
   state.graceUntil = undefined;
   tenants.set(tenantId, state);
   
-  req.log.warn({ tenantId, stripeSubscriptionId }, 'Subscription deleted - tenant deactivated');
+  req.log.warn({ tenantId, stripeSubscriptionId }, 'Subscription deleted - tenant deactivated and marked as expired');
   
   // Send notification email - get email from customer if available
   // Note: We may need to fetch customer details from Stripe if email is needed
