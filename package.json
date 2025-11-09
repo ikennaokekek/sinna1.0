@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "pnpm -C apps/api dev",
     "dev:worker": "pnpm -C apps/worker dev",
-    "build": "pnpm -C apps/api build && pnpm -C apps/worker build",
+    "build": "pnpm -C packages/types build && pnpm -C apps/api build && pnpm -C apps/worker build",
     "start": "node apps/api/dist/index.js",
     "start:worker": "node apps/worker/dist/index.js",
     "test": "jest",
