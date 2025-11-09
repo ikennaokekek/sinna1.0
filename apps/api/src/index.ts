@@ -168,14 +168,27 @@ app.addHook('preHandler', async (req, reply) => {
   const h = hashKey(key);
   const { pool } = getDb();
   const { rows } = await pool.query(
-    'select t.id as tenant_id, t.active, t.grace_until from api_keys k join tenants t on t.id=k.tenant_id where k.key_hash=$1',
+    'select t.id as tenant_id, t.active, t.status, t.grace_until, t.expires_at from api_keys k join tenants t on t.id=k.tenant_id where k.key_hash=$1',
     [h]
   );
   const row = rows[0];
   if (!row) return reply.code(401).send({ code: 'unauthorized' });
+  
   const now = new Date();
   const inGrace = row.grace_until && now < new Date(row.grace_until);
-  if (!row.active && !inGrace) return reply.code(402).send({ code: 'payment_required' });
+  const isExpired = row.expires_at && now >= new Date(row.expires_at);
+  const isActive = row.status === 'active' && row.active && !isExpired;
+  
+  // Check subscription expiration first
+  if (isExpired && !inGrace) {
+    return reply.code(401).send({ code: 'subscription_expired', error: 'Your subscription has expired. Please renew to continue using the API.' });
+  }
+  
+  // Check status and active flag
+  if (!isActive && !inGrace) {
+    return reply.code(402).send({ code: 'payment_required', error: 'Your subscription is not active. Please update your payment method.' });
+  }
+  
   (req as AuthenticatedRequest).tenantId = row.tenant_id as string;
 });
 
