@@ -51,12 +51,19 @@ export async function runMigrations(): Promise<void> {
   }
   
   // Seed tenant and API key after migrations complete
+  // This is optional and failures should not block migrations
   try {
     const { seedTenantAndApiKey } = await import('./seedTenantAndApiKey');
     await seedTenantAndApiKey();
-  } catch (error) {
+    console.log('[runMigrations] ✅ Tenant and API key seeding completed');
+  } catch (error: any) {
     // Log but don't fail migrations if seeding fails
-    console.error('[runMigrations] Failed to seed tenant and API key:', error);
+    // This allows migrations to complete even if seeding has issues
+    console.error('[runMigrations] ⚠️  Failed to seed tenant and API key (non-fatal):', error?.message || error);
+    if (error?.code) {
+      console.error(`[runMigrations] Database error code: ${error.code}`);
+    }
+    // Continue - migrations are complete, seeding is optional
   }
 }
 
