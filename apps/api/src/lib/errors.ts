@@ -13,7 +13,7 @@ export class ApiError extends Error {
   }
 }
 
-export function sendErrorResponse(reply: FastifyReply, error: ApiError | Error, statusCode = 500): void {
+export function sendErrorResponse(reply: FastifyReply, error: ApiError | Error, statusCode = 500): FastifyReply {
   if (error instanceof ApiError) {
     const response: ErrorResponse = {
       success: false,
@@ -21,14 +21,14 @@ export function sendErrorResponse(reply: FastifyReply, error: ApiError | Error, 
       message: error.message,
       details: error.details,
     };
-    reply.code(error.statusCode).send(response);
+    return reply.code(error.statusCode).send(response);
   } else {
     const response: ErrorResponse = {
       success: false,
       error: 'internal_error',
       message: error.message || 'An internal error occurred',
     };
-    reply.code(statusCode).send(response);
+    return reply.code(statusCode).send(response);
   }
 }
 

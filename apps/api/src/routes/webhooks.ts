@@ -115,11 +115,11 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
       }
 
       performanceMonitor.end(perfId);
-      res.send({ received: true });
+      return res.send({ received: true });
     } catch (error) {
       performanceMonitor.end(perfId);
       req.log.error({ error }, 'Webhook processing error');
-      sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
+      return sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
     }
   });
 }

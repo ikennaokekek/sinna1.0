@@ -116,7 +116,7 @@ export function registerSubscriptionRoutes(app: FastifyInstance): void {
     } catch (error) {
       performanceMonitor.end(perfId);
       req.log.error({ error }, 'Failed to get subscription details');
-      sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
+      return sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
     }
   });
 }
