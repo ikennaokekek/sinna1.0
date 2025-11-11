@@ -206,11 +206,67 @@ async function handleCheckoutSessionCompleted(
     const { createApiKey } = await import('../utils/keys');
     const { apiKey, hashed } = createApiKey();
 
-    const { tenantId } = await seedTenantAndApiKey({
-      tenantName: email,
-      plan: 'standard',
-      apiKeyHash: hashed,
-    });
+    // Create tenant and API key in a transaction
+    let tenantId: string;
+    try {
+      const result = await seedTenantAndApiKey({
+        tenantName: email,
+        plan: 'standard',
+        apiKeyHash: hashed,
+      });
+      tenantId = result.tenantId;
+      
+      // Validate tenant was created successfully
+      if (!tenantId) {
+        throw new Error('Failed to create tenant: tenantId is null or undefined');
+      }
+      
+      // Verify tenant exists in database before proceeding
+      const { pool } = getDb();
+      const tenantCheck = await pool.query(
+        'SELECT id FROM tenants WHERE id = $1',
+        [tenantId]
+      );
+      
+      if (tenantCheck.rows.length === 0) {
+        throw new Error(`Invalid tenant_id: ${tenantId} - tenant not found in database`);
+      }
+      
+      req.log.info({ email, tenantId }, 'Tenant and API key created successfully');
+    } catch (dbError: any) {
+      // Check for foreign key violation
+      if (dbError?.code === '23503' || dbError?.message?.includes('foreign key')) {
+        req.log.error({ 
+          error: dbError, 
+          email, 
+          message: 'Foreign key violation - tenant_id is invalid' 
+        }, 'Database foreign key error when creating tenant/API key');
+        throw new Error(`Invalid tenant_id foreign key: ${dbError.message}`);
+      }
+      // Check for unique constraint violation (duplicate email)
+      if (dbError?.code === '23505' || dbError?.message?.includes('unique constraint')) {
+        req.log.warn({ email, error: dbError }, 'Tenant already exists, attempting to find existing tenant');
+        // Try to find existing tenant
+        const { pool } = getDb();
+        const existingTenant = await pool.query(
+          'SELECT id FROM tenants WHERE name = $1',
+          [email]
+        );
+        if (existingTenant.rows.length > 0) {
+          tenantId = existingTenant.rows[0].id;
+          // Create API key for existing tenant
+          await pool.query(
+            'INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING',
+            [hashed, tenantId]
+          );
+          req.log.info({ email, tenantId }, 'Using existing tenant, API key added');
+        } else {
+          throw new Error(`Failed to create or find tenant for email: ${email}`);
+        }
+      } else {
+        throw dbError;
+      }
+    }
 
     const stripeCustomerId = typeof session.customer === 'string' ? session.customer : session.customer?.id || '';
     const stripeSubscriptionId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id || '';
@@ -220,6 +276,17 @@ async function handleCheckoutSessionCompleted(
     expiresAt.setDate(expiresAt.getDate() + 30);
     
     const { pool } = getDb();
+    
+    // Validate tenant_id again before updating
+    const tenantValidation = await pool.query(
+      'SELECT id FROM tenants WHERE id = $1',
+      [tenantId]
+    );
+    
+    if (tenantValidation.rows.length === 0) {
+      throw new Error(`Cannot update tenant: tenant_id ${tenantId} does not exist`);
+    }
+    
     if (stripeCustomerId && stripeSubscriptionId) {
       await pool.query(
         'UPDATE tenants SET stripe_customer_id = $1, stripe_subscription_id = $2, status = $3, active = $4, expires_at = $5 WHERE id = $6',
@@ -285,7 +352,12 @@ async function handleCheckoutSessionCompleted(
       req.log.warn({ apiKey, email }, 'API KEY FOR MANUAL RETRIEVAL (email failed)');
     }
   } catch (error) {
-    req.log.error({ error, email }, 'Failed to create tenant and API key for new subscription');
+    req.log.error({ 
+      error, 
+      email,
+      errorCode: (error as any)?.code,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    }, 'Failed to create tenant and API key for new subscription');
     throw error;
   }
 }
