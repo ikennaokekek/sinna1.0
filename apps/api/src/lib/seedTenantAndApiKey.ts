@@ -1,5 +1,25 @@
 import { getDb } from './db';
-import crypto from 'crypto';
+import crypto, { randomBytes } from 'crypto';
+
+/**
+ * Generate secure API key secret based on environment
+ * - Production: Uses SEED_API_KEY_SECRET from environment
+ * - Development: Generates random 32-byte hex string
+ */
+function getApiKeySecret(): string {
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  if (isProduction) {
+    const secret = process.env.SEED_API_KEY_SECRET;
+    if (!secret) {
+      throw new Error('SEED_API_KEY_SECRET environment variable is required in production');
+    }
+    return secret;
+  }
+  
+  // Development: Generate random secure key
+  return randomBytes(32).toString('hex');
+}
 
 /**
  * Seed tenant and API key with environment-specific email
@@ -18,16 +38,16 @@ export async function seedTenantAndApiKey(): Promise<void> {
     
     // 1. Determine tenant email based on NODE_ENV
     const isProduction = process.env.NODE_ENV === 'production';
-    const email = isProduction ? 'motion24inc@gmail.com' : 'ikennaokeke1996@gmail.com';
-    const tenantName = isProduction ? 'Sinna Tenant' : 'Dev Tenant';
+    const tenantEmail = isProduction ? 'motion24inc@gmail.com' : 'ikennaokeke1996@gmail.com';
+    const tenantName = 'Test Tenant';
     
     console.log(`[seedTenantAndApiKey] Environment: ${isProduction ? 'production' : 'development'}`);
-    console.log(`[seedTenantAndApiKey] Tenant email: ${email}`);
+    console.log(`[seedTenantAndApiKey] Tenant email: ${tenantEmail}`);
     
     // 2. Check if tenant exists by email (stored in name field)
     const existingTenantRes = await client.query(
       `SELECT id FROM tenants WHERE name = $1 LIMIT 1`,
-      [email]
+      [tenantEmail]
     );
     
     let tenantId: string;
@@ -40,7 +60,7 @@ export async function seedTenantAndApiKey(): Promise<void> {
       // 3. Create tenant if it doesn't exist
       const tenantRes = await client.query(
         `INSERT INTO tenants(name, active, plan) VALUES ($1, true, $2) RETURNING id`,
-        [email, 'standard']
+        [tenantEmail, 'standard']
       );
       
       if (tenantRes.rows.length === 0) {
@@ -69,18 +89,18 @@ export async function seedTenantAndApiKey(): Promise<void> {
     
     console.log(`[seedTenantAndApiKey] ✅ Tenant verified: ${tenantId}`);
     
-    // 4. Insert API key linked to this tenantId
-    // Generate a test API key hash
-    const testSecret = 'test-secret-key';
-    const keyHash = crypto.createHash('sha256').update(testSecret).digest('hex');
+    // 4. Generate secure API key secret
+    const apiKeySecret = getApiKeySecret();
+    const keyHash = crypto.createHash('sha256').update(apiKeySecret).digest('hex');
     
-    // Insert API key (ON CONFLICT DO NOTHING makes it idempotent)
-    // Double-check tenant_id is still valid
+    // 5. Insert API key linked to this tenantId
+    // ON CONFLICT DO NOTHING makes it idempotent
     try {
       await client.query(
         `INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING`,
         [keyHash, tenantId]
       );
+      console.log(`[seedTenantAndApiKey] ✅ API key linked to tenant: ${tenantId}`);
     } catch (insertError: any) {
       // Handle foreign key violation specifically
       if (insertError?.code === '23503') {
@@ -90,10 +110,8 @@ export async function seedTenantAndApiKey(): Promise<void> {
       throw insertError;
     }
     
-    console.log(`[seedTenantAndApiKey] ✅ API key linked to tenant: ${tenantId}`);
-    
     await client.query('COMMIT');
-    console.log(`[seedTenantAndApiKey] ✅ Seed complete`);
+    console.log('✅ Tenant + API key seeded successfully.');
   } catch (error: any) {
     try {
       await client.query('ROLLBACK');
@@ -101,7 +119,7 @@ export async function seedTenantAndApiKey(): Promise<void> {
       console.error('[seedTenantAndApiKey] ❌ Rollback failed:', rollbackError);
     }
     
-    console.error('[seedTenantAndApiKey] ❌ Error:', error.message);
+    console.error('❌ Seeding error:', error?.code || error.message);
     if (error.code) {
       console.error(`[seedTenantAndApiKey] ❌ Database error code: ${error.code}`);
     }
