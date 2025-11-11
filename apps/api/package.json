@@ -9,7 +9,7 @@
     "build": "NODE_OPTIONS='--max-old-space-size=2048' npx tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "migrate": "node -e \"(async()=>{const{runMigrations}=await import('./dist/lib/db.js');await runMigrations();console.log('migrations done')})().catch(e=>{console.error(e);process.exit(1)})\"",
+    "migrate": "MIGRATE_STANDALONE=true node -e \"(async()=>{const{runMigrations}=await import('./dist/lib/db.js');await runMigrations();console.log('migrations done')})().catch(e=>{console.error(e);process.exit(1)})\"",
     "seed": "node dist/scripts/seed.js"
   },
   "dependencies": {

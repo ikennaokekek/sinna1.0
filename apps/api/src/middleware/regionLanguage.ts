@@ -186,6 +186,7 @@ export async function resolveLanguage(req: FastifyRequest): Promise<LanguageInfo
   if (geo.country_code) {
     const regionLang = REGION_LANGUAGE_MAP[geo.country_code];
     if (regionLang) {
+      // Region is supported, return detected language
       return {
         resolved_language: regionLang,
         source: 'geo_ip',
@@ -194,8 +195,19 @@ export async function resolveLanguage(req: FastifyRequest): Promise<LanguageInfo
         country_code: geo.country_code,
       };
     }
+    // Region detected but not in language map (unsupported region like Mars)
+    // Only use fallback if region is truly unsupported
+    return {
+      resolved_language: 'en-US',
+      source: 'fallback',
+      fallback_used: true,
+      region: geo.region,
+      country_code: geo.country_code,
+    };
   }
 
+  // No country code detected (e.g., localhost, private IP)
+  // Use fallback only for truly unsupported cases
   return {
     resolved_language: 'en-US',
     source: 'fallback',
