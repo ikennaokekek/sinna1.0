@@ -7,8 +7,10 @@ on:
     branches: [ main ]
 
 env:
-  BASE_URL: https://sinna1-0.onrender.com, http://localhost:4000
-  DATABASE_URL: postgresql://sinna1_0_user:g8vB4HBdqjK3izSoG0ZJz7D4NyFbsjhz@dpg-d3htvb33fgac73a3ttj0-a.frankfurt-postgres.render.com/sinna1_0
+  BASE_URL_PRIVATE: https://sinna1-0.onrender.com, http://localhost:4000
+  # TODO: Move DATABASE_URL to GitHub Secrets for better security
+  # Repository Settings → Secrets and variables → Actions → New repository secret
+  DATABASE_URL: postgresql://sinna1_0_user:g8vB4HBdqjK3izSoG0ZJz7D4NyFbsjhz@dpg-d3htvb33fgac73a3ttj0-a.frankfurt-postgres.render.com/sinna1_0?sslmode=require
   REDIS_URL: rediss://default:AWMYAAIncDFjZGEwYTJlMGJlMjU0YzkzYjdkYjZmYmNhYmViM2VlNnAxMjUzNjg@good-owl-25368.upstash.io:6379
 
 jobs:
@@ -89,7 +91,7 @@ jobs:
       - name: Real flow (create → poll until completed)
         run: |
           set -e
-          BASE=${{ env.BASE_URL }}
+          BASE=http://localhost:4000
           curl -sSf $BASE/health
           JOB=$(curl -sSf -X POST $BASE/v1/jobs \
             -H 'x-api-key: YOUR_TEST_KEY' \
