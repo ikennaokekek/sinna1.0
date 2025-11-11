@@ -278,7 +278,7 @@ export function registerJobRoutes(
         });
       }
       req.log.error({ error }, 'Failed to create job');
-      sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
+      return sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
     }
   });
 
@@ -503,7 +503,7 @@ export function registerJobRoutes(
         });
       }
       req.log.error({ error }, 'Failed to get job status');
-      sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
+      return sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
     }
   });
 }

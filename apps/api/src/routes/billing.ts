@@ -83,7 +83,7 @@ export function registerBillingRoutes(app: FastifyInstance, stripe: Stripe | nul
     } catch (error) {
       performanceMonitor.end(perfId);
       req.log.error({ err: error }, 'Failed to create Stripe Checkout Session');
-      sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)), 500);
+      return sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)), 500);
     }
   });
 }
