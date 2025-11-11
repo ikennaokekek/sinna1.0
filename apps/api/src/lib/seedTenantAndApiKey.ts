@@ -48,13 +48,26 @@ export async function seedTenantAndApiKey(): Promise<void> {
       }
       
       tenantId = tenantRes.rows[0].id as string;
+      
+      if (!tenantId) {
+        throw new Error('Failed to create tenant: tenantId is null or undefined');
+      }
+      
       console.log(`[seedTenantAndApiKey] ✅ Tenant created: ${tenantId}`);
     }
     
-    // Verify tenant_id is valid before proceeding
-    if (!tenantId) {
-      throw new Error('Invalid tenant_id: tenantId is null or undefined');
+    // CRITICAL: Verify tenant_id exists in database before inserting API key
+    // This prevents foreign key errors
+    const verifyTenantRes = await client.query(
+      `SELECT id FROM tenants WHERE id = $1`,
+      [tenantId]
+    );
+    
+    if (verifyTenantRes.rows.length === 0) {
+      throw new Error(`Invalid tenant_id: ${tenantId} - tenant not found in database after creation/lookup`);
     }
+    
+    console.log(`[seedTenantAndApiKey] ✅ Tenant verified: ${tenantId}`);
     
     // 4. Insert API key linked to this tenantId
     // Generate a test API key hash
@@ -62,10 +75,20 @@ export async function seedTenantAndApiKey(): Promise<void> {
     const keyHash = crypto.createHash('sha256').update(testSecret).digest('hex');
     
     // Insert API key (ON CONFLICT DO NOTHING makes it idempotent)
-    await client.query(
-      `INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING`,
-      [keyHash, tenantId]
-    );
+    // Double-check tenant_id is still valid
+    try {
+      await client.query(
+        `INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING`,
+        [keyHash, tenantId]
+      );
+    } catch (insertError: any) {
+      // Handle foreign key violation specifically
+      if (insertError?.code === '23503') {
+        // Foreign key violation - tenant doesn't exist
+        throw new Error(`Foreign key violation: tenant_id ${tenantId} does not exist in tenants table. Error: ${insertError.message}`);
+      }
+      throw insertError;
+    }
     
     console.log(`[seedTenantAndApiKey] ✅ API key linked to tenant: ${tenantId}`);
     
@@ -82,6 +105,12 @@ export async function seedTenantAndApiKey(): Promise<void> {
     if (error.code) {
       console.error(`[seedTenantAndApiKey] ❌ Database error code: ${error.code}`);
     }
+    if (error.detail) {
+      console.error(`[seedTenantAndApiKey] ❌ Database error detail: ${error.detail}`);
+    }
+    
+    // Re-throw error so caller can handle it
+    // runMigrations will catch and log without failing migrations
     throw error;
   } finally {
     client.release();
