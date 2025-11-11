@@ -49,6 +49,15 @@ export async function runMigrations(): Promise<void> {
     const sql = fs.readFileSync(migPath, 'utf-8');
     await pool.query(sql);
   }
+  
+  // Seed tenant and API key after migrations complete
+  try {
+    const { seedTenantAndApiKey } = await import('./seedTenantAndApiKey');
+    await seedTenantAndApiKey();
+  } catch (error) {
+    // Log but don't fail migrations if seeding fails
+    console.error('[runMigrations] Failed to seed tenant and API key:', error);
+  }
 }
 
 /**
