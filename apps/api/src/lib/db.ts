@@ -57,19 +57,70 @@ export async function seedTenantAndApiKey(params: { tenantName: string; plan?: s
 	const client = await pool.connect();
 	try {
 		await client.query('BEGIN');
-		const tenantRes = await client.query(
-			`insert into tenants(name, active, plan) values ($1, true, $2) returning id`,
-			[params.tenantName, plan]
+		
+		// 1. Check if tenant exists by name
+		const existingTenantRes = await client.query(
+			`SELECT id FROM tenants WHERE name = $1 LIMIT 1`,
+			[params.tenantName]
 		);
-		const tenantId: string = tenantRes.rows[0].id;
+		
+		let tenantId: string;
+		
+		if (existingTenantRes.rows.length > 0) {
+			// Tenant exists, use existing tenant_id
+			tenantId = existingTenantRes.rows[0].id as string;
+			
+			// Verify tenant still exists (defensive check)
+			const verifyRes = await client.query(
+				`SELECT id FROM tenants WHERE id = $1`,
+				[tenantId]
+			);
+			
+			if (verifyRes.rows.length === 0) {
+				throw new Error(`Invalid tenant_id: ${tenantId} - tenant not found in database`);
+			}
+		} else {
+			// 2. Create tenant if not exists
+			const tenantRes = await client.query(
+				`INSERT INTO tenants(name, active, plan) VALUES ($1, true, $2) RETURNING id`,
+				[params.tenantName, plan]
+			);
+			
+			if (tenantRes.rows.length === 0) {
+				throw new Error('Failed to create tenant: no ID returned');
+			}
+			
+			tenantId = tenantRes.rows[0].id as string;
+			
+			if (!tenantId) {
+				throw new Error('Failed to create tenant: tenantId is null or undefined');
+			}
+		}
+		
+		// 3. Now insert API key linked to the valid tenant_id
 		await client.query(
-			`insert into api_keys(key_hash, tenant_id) values ($1, $2) on conflict (key_hash) do nothing`,
+			`INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING`,
 			[params.apiKeyHash, tenantId]
 		);
+		
 		await client.query('COMMIT');
 		return { tenantId };
-	} catch (e) {
+	} catch (e: any) {
 		try { await client.query('ROLLBACK'); } catch {}
+		
+		// Handle specific database errors
+		if (e?.code === '23503') {
+			// Foreign key violation
+			throw new Error(`Invalid tenant_id foreign key: ${e.message}`);
+		} else if (e?.code === '23505') {
+			// Unique constraint violation (shouldn't happen with ON CONFLICT DO NOTHING, but handle it)
+			throw new Error(`API key already exists: ${e.message}`);
+		} else if (e?.code === '23502') {
+			// Not null violation
+			throw new Error(`Required field missing: ${e.message}`);
+		}
+		
+		// Re-throw with original error if not a known database error
 		throw e;
 	} finally {
 		client.release();
