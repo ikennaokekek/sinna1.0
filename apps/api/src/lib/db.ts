@@ -51,17 +51,31 @@ export async function runMigrations(): Promise<void> {
   }
 }
 
-export async function seedTenantAndApiKey(params: { tenantName: string; plan?: string; apiKeyHash: string }): Promise<{ tenantId: string }>{
+/**
+ * Get environment-specific tenant email
+ * Development: ikennaokeke1996@gmail.com
+ * Production: motion24inc@gmail.com
+ */
+function getDefaultTenantEmail(): string {
+	const isDev = process.env.NODE_ENV !== 'production';
+	return isDev ? 'ikennaokeke1996@gmail.com' : 'motion24inc@gmail.com';
+}
+
+export async function seedTenantAndApiKey(params: { tenantName?: string; plan?: string; apiKeyHash: string }): Promise<{ tenantId: string }>{
 	const { pool } = getDb();
 	const plan = (params.plan || 'standard').toLowerCase();
+	
+	// Use environment-specific email if tenantName not provided
+	const tenantEmail = params.tenantName || getDefaultTenantEmail();
+	
 	const client = await pool.connect();
 	try {
 		await client.query('BEGIN');
 		
-		// 1. Check if tenant exists by name
+		// 1. Check if tenant exists by name (email)
 		const existingTenantRes = await client.query(
 			`SELECT id FROM tenants WHERE name = $1 LIMIT 1`,
-			[params.tenantName]
+			[tenantEmail]
 		);
 		
 		let tenantId: string;
@@ -83,7 +97,7 @@ export async function seedTenantAndApiKey(params: { tenantName: string; plan?: s
 			// 2. Create tenant if not exists
 			const tenantRes = await client.query(
 				`INSERT INTO tenants(name, active, plan) VALUES ($1, true, $2) RETURNING id`,
-				[params.tenantName, plan]
+				[tenantEmail, plan]
 			);
 			
 			if (tenantRes.rows.length === 0) {
