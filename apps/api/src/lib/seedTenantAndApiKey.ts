@@ -95,6 +95,16 @@ export async function seedTenantAndApiKey(): Promise<void> {
     
     // 5. Insert API key linked to this tenantId
     // ON CONFLICT DO NOTHING makes it idempotent
+    // Final verification: ensure tenant_id is valid before insert
+    const finalVerifyRes = await client.query(
+      `SELECT id FROM tenants WHERE id = $1`,
+      [tenantId]
+    );
+    
+    if (finalVerifyRes.rows.length === 0) {
+      throw new Error(`CRITICAL: tenant_id ${tenantId} does not exist in tenants table before API key insertion`);
+    }
+    
     try {
       await client.query(
         `INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING`,
@@ -104,8 +114,8 @@ export async function seedTenantAndApiKey(): Promise<void> {
     } catch (insertError: any) {
       // Handle foreign key violation specifically
       if (insertError?.code === '23503') {
-        // Foreign key violation - tenant doesn't exist
-        throw new Error(`Foreign key violation: tenant_id ${tenantId} does not exist in tenants table. Error: ${insertError.message}`);
+        // Foreign key violation - tenant doesn't exist (should never happen after verification)
+        throw new Error(`Foreign key violation: tenant_id ${tenantId} does not exist in tenants table. This should not happen after verification. Error: ${insertError.message}`);
       }
       throw insertError;
     }
