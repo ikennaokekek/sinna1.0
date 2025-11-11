@@ -46,6 +46,11 @@ export function registerJobRoutes(
             type: 'string',
             enum: ['everyday', 'adhd', 'autism', 'low_vision', 'color', 'hoh', 'cognitive', 'motion', 'blindness', 'deaf', 'color_blindness', 'epilepsy_flash', 'epilepsy_noise', 'cognitive_load'],
             description: 'Optional preset to influence processing behaviour. Supports video transformation for accessibility needs.'
+          },
+          language: {
+            type: 'string',
+            pattern: '^[a-z]{2}(-[A-Z]{2})?$',
+            description: 'Optional language code (e.g., "en", "en-US", "zh-CN", "fr-FR"). If not provided, auto-detected from IP/geo location. Only defaults to "en" if region is unsupported.'
           }
         }
       },
@@ -105,6 +110,7 @@ export function registerJobRoutes(
       const Body = z.object({
         source_url: z.string().url(),
         preset_id: z.string().optional(),
+        language: z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/).optional(),
       });
       const body = Body.parse(req.body);
       const tenantId = (req as AuthenticatedRequest).tenantId;
@@ -128,9 +134,38 @@ export function registerJobRoutes(
         req.log.warn({ err }, 'usage gate failed');
       }
 
-      // idempotency key: sha256(source_url+preset+tenant)
+      // Resolve language with priority: user override > auto-detected > default (only if unsupported region)
+      const authReq = req as AuthenticatedRequest;
+      let resolvedLanguage: string;
+      
+      if (body.language) {
+        // User explicitly provided language (highest priority)
+        resolvedLanguage = body.language;
+        req.log.info({ language: resolvedLanguage, source: 'user_override' }, 'Using user-provided language');
+      } else if (authReq.resolvedLanguage && authReq.languageInfo?.source !== 'fallback') {
+        // Use auto-detected language (from geo-IP or browser locale)
+        resolvedLanguage = authReq.resolvedLanguage;
+        req.log.info({ 
+          language: resolvedLanguage, 
+          source: authReq.languageInfo?.source || 'auto_detected' 
+        }, 'Using auto-detected language');
+      } else {
+        // Only use 'en' as default if region is truly unsupported
+        // If fallback was used, it means region wasn't in REGION_LANGUAGE_MAP
+        resolvedLanguage = 'en';
+        req.log.info({ 
+          language: resolvedLanguage, 
+          source: 'default_unsupported_region',
+          country_code: authReq.languageInfo?.country_code 
+        }, 'Using default language (unsupported region)');
+      }
+      
+      // Extract base language code (e.g., 'en-US' -> 'en', 'zh-CN' -> 'zh')
+      const languageCode = resolvedLanguage.split('-')[0].toLowerCase();
+      
+      // idempotency key: sha256(source_url+preset+language+tenant)
       const idemKey = crypto.createHash('sha256')
-        .update(`${body.source_url}|${body.preset_id || ''}|${tenantId}`)
+        .update(`${body.source_url}|${body.preset_id || ''}|${resolvedLanguage}|${tenantId}`)
         .digest('hex');
       const idemCacheKey = `jobs:idempotency:${idemKey}`;
       
@@ -162,13 +197,21 @@ export function registerJobRoutes(
       }
       
       const presetCfg = presets[preset] || presets['everyday'] || { subtitleFormats: ['vtt', 'srt', 'ttml'] };
-      const language = 'en';
       const captionFormat = 'vtt';
+
+      // Log language resolution for debugging
+      req.log.info({ 
+        resolvedLanguage, 
+        languageCode,
+        source: body.language ? 'user_override' : (authReq.languageInfo?.source || 'auto_detected'),
+        country_code: authReq.languageInfo?.country_code 
+      }, 'Language resolved for job creation');
 
       // enqueue pipeline: captions -> ad -> color
       const captionJob = await queues.captions.add('generate-subtitles', {
         videoUrl: body.source_url,
-        language,
+        language: languageCode, // Use base language code (e.g., 'en', 'zh', 'fr')
+        languageFull: resolvedLanguage, // Store full language code (e.g., 'en-US', 'zh-CN') for reference
         format: captionFormat,
         formats: presetCfg.subtitleFormats,
         captionStyle: presetCfg.captionStyle,
@@ -179,7 +222,8 @@ export function registerJobRoutes(
 
       const adJob = await queues.ad.add('generate-audio-description', {
         videoUrl: body.source_url,
-        language,
+        language: languageCode, // Use base language code
+        languageFull: resolvedLanguage, // Store full language code for reference
         enabled: !!presetCfg.adEnabled,
         speed: presetCfg.speed || 1.0,
         tenantId,

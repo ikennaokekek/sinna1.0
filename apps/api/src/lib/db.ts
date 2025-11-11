@@ -52,18 +52,33 @@ export async function runMigrations(): Promise<void> {
   
   // Seed tenant and API key after migrations complete
   // This is optional and failures should not block migrations
-  try {
-    const { seedTenantAndApiKey } = await import('./seedTenantAndApiKey');
-    await seedTenantAndApiKey();
-    console.log('[runMigrations] ✅ Tenant and API key seeding completed');
-  } catch (error: any) {
-    // Log but don't fail migrations if seeding fails
-    // This allows migrations to complete even if seeding has issues
-    console.error('[runMigrations] ⚠️  Failed to seed tenant and API key (non-fatal):', error?.message || error);
-    if (error?.code) {
-      console.error(`[runMigrations] Database error code: ${error.code}`);
+  // Skip seeding in CI to avoid hanging (CI will use test data)
+  const isCI = process.env.CI === 'true';
+  if (!isCI) {
+    try {
+      const { seedTenantAndApiKey } = await import('./seedTenantAndApiKey');
+      await seedTenantAndApiKey();
+      console.log('[runMigrations] ✅ Tenant and API key seeding completed');
+    } catch (error: any) {
+      // Log but don't fail migrations if seeding fails
+      // This allows migrations to complete even if seeding has issues
+      console.error('[runMigrations] ⚠️  Failed to seed tenant and API key (non-fatal):', error?.message || error);
+      if (error?.code) {
+        console.error(`[runMigrations] Database error code: ${error.code}`);
+      }
+      // Continue - migrations are complete, seeding is optional
     }
-    // Continue - migrations are complete, seeding is optional
+  } else {
+    console.log('[runMigrations] ⏭️  Skipping seeding in CI environment');
+  }
+  
+  // CRITICAL: Close pool connection to allow process to exit
+  // This prevents GitHub Actions from hanging indefinitely
+  // Only close if we're in a migration script context (not main app)
+  const isStandaloneMigration = process.argv[1]?.includes('migrate') || process.env.MIGRATE_STANDALONE === 'true';
+  if (isStandaloneMigration || isCI) {
+    await pool.end();
+    console.log('[runMigrations] ✅ Database pool closed');
   }
 }
 
