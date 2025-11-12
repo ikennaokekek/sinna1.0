@@ -94,9 +94,25 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
       }
 
       // Handle checkout.session.completed
+      // NOTE: This event is now primarily handled by Replit Developer Portal.
+      // Replit creates the customer, generates API key, sends email, then syncs to Render via /v1/sync/tenant
+      // This handler is kept for backward compatibility but should be deprioritized.
+      // In production with Replit, this webhook may not be received by Render.
       if (event.type === 'checkout.session.completed') {
-        req.log.info({ eventId: event.id, eventType: event.type }, 'Received checkout.session.completed webhook');
-        await handleCheckoutSessionCompleted(event, req, tenants);
+        req.log.info({ 
+          eventId: event.id, 
+          eventType: event.type,
+          note: 'checkout.session.completed is now handled by Replit Developer Portal. This handler is for backward compatibility only.'
+        }, 'Received checkout.session.completed webhook (deprioritized - handled by Replit)');
+        
+        // Only process if explicitly enabled via environment variable
+        // This allows gradual migration and fallback if needed
+        if (process.env.ENABLE_RENDER_CHECKOUT_HANDLER === 'true') {
+          req.log.info('Processing checkout.session.completed (ENABLE_RENDER_CHECKOUT_HANDLER=true)');
+          await handleCheckoutSessionCompleted(event, req, tenants);
+        } else {
+          req.log.info('Skipping checkout.session.completed handler (handled by Replit Developer Portal)');
+        }
       }
 
       // Handle invoice.payment_failed

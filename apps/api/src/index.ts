@@ -28,6 +28,7 @@ import { registerWebhookRoutes } from './routes/webhooks';
 import { registerBillingRoutes } from './routes/billing';
 import { registerJobRoutes } from './routes/jobs';
 import { registerSubscriptionRoutes } from './routes/subscription';
+import { registerSyncRoutes } from './routes/sync';
 import { requestIdHook } from './middleware/requestId';
 import { sendErrorResponse } from './lib/errors';
 import { regionLanguageMiddleware } from './middleware/regionLanguage';
@@ -153,13 +154,15 @@ const failuresTotal = new Counter({ name: 'failures_total', help: 'Total failure
 
 // Auth preHandler: validate API key, check subscription/grace, attach tenantId
 app.addHook('preHandler', async (req, reply) => {
-  // Allow public metrics/docs, demo endpoint, billing pages, and Stripe webhooks to bypass auth
+  // Allow public metrics/docs, demo endpoint, billing pages, Stripe webhooks, and sync endpoint to bypass auth
   // Test endpoints now require admin authentication
+  // Sync endpoint has its own security (shared secret or IP allowlist)
   if (
     req.url.startsWith('/api-docs') ||
     req.url.startsWith('/billing/success') ||
     req.url.startsWith('/billing/cancel') ||
-    req.url.startsWith('/webhooks/stripe')
+    req.url.startsWith('/webhooks/stripe') ||
+    req.url.startsWith('/v1/sync/tenant')
   ) {
     return;
   }
@@ -539,6 +542,7 @@ function registerRoutes(): void {
   registerBillingRoutes(app, stripe);
   registerWebhookRoutes(app, stripe, tenants);
   registerSubscriptionRoutes(app);
+  registerSyncRoutes(app); // Replit Developer Portal sync endpoint
   // Note: redis will be set in start() function, routes will use it when called
   }
 
