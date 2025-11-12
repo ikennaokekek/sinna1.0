@@ -89,8 +89,9 @@ jobs:
         run: |
           set -e
           H=$(printf YOUR_TEST_KEY | sha256sum | awk '{print $1}')
-          # Trim whitespace and newlines from TENANT_ID to prevent UUID format errors
-          TENANT_ID=$(psql "$DATABASE_URL" -At -c "insert into tenants(name, active, plan) values ('ci', true, 'standard') returning id;" | tr -d '[:space:]')
+          # Extract only the first line (UUID) and trim whitespace to prevent UUID format errors
+          # Using -q flag to suppress command status output, so we only get the UUID
+          TENANT_ID=$(psql "$DATABASE_URL" -Atq -c "insert into tenants(name, active, plan) values ('ci', true, 'standard') returning id;" | tr -d '[:space:]')
           psql "$DATABASE_URL" -c "insert into api_keys(key_hash, tenant_id) values ('$H', '$TENANT_ID');"
 
       - name: Start API

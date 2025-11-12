@@ -48,8 +48,21 @@ function validateSyncOrigin(req: FastifyRequest): { valid: boolean; reason?: str
   const syncSecret = process.env.REPLIT_SYNC_SECRET;
   if (syncSecret) {
     const providedSecret = req.headers['x-sync-secret'] as string;
-    if (providedSecret !== syncSecret) {
-      return { valid: false, reason: 'Invalid sync secret' };
+    
+    // DEBUG: Log secret comparison (without exposing actual values)
+    if (!providedSecret) {
+      return { valid: false, reason: 'Missing X-Sync-Secret header' };
+    }
+    
+    const secretsMatch = providedSecret === syncSecret;
+    const providedLength = providedSecret?.length || 0;
+    const expectedLength = syncSecret.length;
+    
+    if (!secretsMatch) {
+      return { 
+        valid: false, 
+        reason: `Secret mismatch: provided length ${providedLength}, expected length ${expectedLength}` 
+      };
     }
     return { valid: true };
   }
@@ -181,12 +194,28 @@ export function registerSyncRoutes(app: FastifyInstance): void {
   }, async (req: FastifyRequest, res: FastifyReply) => {
     const perfId = performanceMonitor.start('sync_tenant', (req as AuthenticatedRequest).requestId);
     
+    // DEBUG: Log that request reached sync endpoint
+    req.log.info({
+      url: req.url,
+      method: req.method,
+      headers: {
+        'x-sync-secret': req.headers['x-sync-secret'] ? '***present***' : 'missing',
+        'content-type': req.headers['content-type'],
+        'x-forwarded-for': req.headers['x-forwarded-for'],
+        'x-real-ip': req.headers['x-real-ip'],
+      },
+      ip: req.ip,
+      hasBody: !!req.body,
+    }, '🔍 DEBUG: Sync endpoint reached - request received');
+    
     try {
       // Rate limiting
       const clientIP = req.ip || 
         (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
         (req.headers['x-real-ip'] as string) ||
         'unknown';
+      
+      req.log.info({ clientIP }, '🔍 DEBUG: Client IP determined');
       
       try {
         const rateLimitRes = await syncLimiter.consume(clientIP, 1);
@@ -204,12 +233,31 @@ export function registerSyncRoutes(app: FastifyInstance): void {
       }
 
       // Validate origin (shared secret or IP allowlist)
+      req.log.info({
+        hasReplitSyncSecret: !!process.env.REPLIT_SYNC_SECRET,
+        hasIpAllowlist: !!process.env.REPLIT_IP_ALLOWLIST,
+        providedSecret: req.headers['x-sync-secret'] ? '***present***' : 'missing',
+        secretLength: req.headers['x-sync-secret'] ? String(req.headers['x-sync-secret']).length : 0,
+      }, '🔍 DEBUG: About to validate sync origin');
+      
       const originValidation = validateSyncOrigin(req);
+      
+      req.log.info({
+        valid: originValidation.valid,
+        reason: originValidation.reason,
+        envSecretSet: !!process.env.REPLIT_SYNC_SECRET,
+        envSecretLength: process.env.REPLIT_SYNC_SECRET?.length || 0,
+        providedSecretLength: req.headers['x-sync-secret'] ? String(req.headers['x-sync-secret']).length : 0,
+        secretsMatch: process.env.REPLIT_SYNC_SECRET === req.headers['x-sync-secret'],
+      }, '🔍 DEBUG: Origin validation result');
+      
       if (!originValidation.valid) {
         req.log.warn({ 
-          ip: clientIP, 
-          reason: originValidation.reason 
-        }, 'Sync request rejected: invalid origin');
+          ip: clientIP,
+          reason: originValidation.reason,
+          envSecretSet: !!process.env.REPLIT_SYNC_SECRET,
+          providedSecret: req.headers['x-sync-secret'] ? '***present***' : 'missing',
+        }, '❌ Sync request rejected: invalid origin');
         performanceMonitor.end(perfId);
         return res.code(401).send({
           success: false,
@@ -217,6 +265,8 @@ export function registerSyncRoutes(app: FastifyInstance): void {
           message: originValidation.reason || 'Invalid origin'
         });
       }
+      
+      req.log.info({}, '✅ DEBUG: Origin validation passed');
 
       // Validate and parse payload
       let payload: z.infer<typeof SyncPayloadSchema>;
