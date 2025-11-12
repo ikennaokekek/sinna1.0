@@ -298,9 +298,9 @@ export function registerSyncRoutes(app: FastifyInstance): void {
 
         // Check if tenant already exists (by tenantId or email)
         const existingTenantRes = await client.query(
-          `SELECT id, name, plan, stripe_customer_id, stripe_subscription_id 
+          `SELECT id, name, email, plan, stripe_customer_id, stripe_subscription_id 
            FROM tenants 
-           WHERE id = $1 OR name = $2 
+           WHERE id = $1 OR email = $2 OR name = $2
            LIMIT 1`,
           [tenantId, email]
         );
@@ -320,7 +320,8 @@ export function registerSyncRoutes(app: FastifyInstance): void {
             // Update tenant record
             await client.query(
               `UPDATE tenants 
-               SET name = $1, 
+               SET name = $1,
+                   email = $1,
                    plan = $2, 
                    active = $3,
                    status = $4,
@@ -367,19 +368,19 @@ export function registerSyncRoutes(app: FastifyInstance): void {
 
           const insertRes = await client.query(
             `INSERT INTO tenants(
-              id, name, plan, active, status, expires_at, 
+              id, name, email, plan, active, status, expires_at, 
               stripe_customer_id, stripe_subscription_id, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+            ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
             RETURNING id`,
             [
-              tenantId,
-              email,
-              plan,
-              subscription_status === 'active' || subscription_status === 'trialing',
-              subscription_status,
-              expires_at,
-              stripe_customer_id || null,
-              stripe_subscription_id || null
+              tenantId,      // $1 - id
+              email,         // $2 - name and email (same value)
+              plan,          // $3 - plan
+              subscription_status === 'active' || subscription_status === 'trialing', // $4 - active
+              subscription_status, // $5 - status
+              expires_at,    // $6 - expires_at
+              stripe_customer_id || null, // $7 - stripe_customer_id
+              stripe_subscription_id || null // $8 - stripe_subscription_id
             ]
           );
 
