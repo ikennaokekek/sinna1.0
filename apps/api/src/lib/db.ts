@@ -43,11 +43,21 @@ export async function runMigrations(): Promise<void> {
     .filter((f: string) => f.endsWith('.sql'))
     .sort();
   
+  console.log(`[runMigrations] Found ${files.length} migration files: ${files.join(', ')}`);
+  
   // Run each migration in order
   for (const file of files) {
     const migPath = path.join(migrationsDir, file);
     const sql = fs.readFileSync(migPath, 'utf-8');
-    await pool.query(sql);
+    console.log(`[runMigrations] Running migration: ${file}`);
+    try {
+      await pool.query(sql);
+      console.log(`[runMigrations] ✅ Successfully ran migration: ${file}`);
+    } catch (error: any) {
+      console.error(`[runMigrations] ❌ Failed to run migration ${file}:`, error.message);
+      console.error(`[runMigrations] Error code: ${error.code}, Detail: ${error.detail}`);
+      throw new Error(`Migration ${file} failed: ${error.message}`);
+    }
   }
   
   // Seed tenant and API key after migrations complete

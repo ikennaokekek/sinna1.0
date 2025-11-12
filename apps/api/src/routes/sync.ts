@@ -297,13 +297,31 @@ export function registerSyncRoutes(app: FastifyInstance): void {
         await client.query('BEGIN');
 
         // Check if tenant already exists (by tenantId or email)
-        const existingTenantRes = await client.query(
-          `SELECT id, name, email, plan, stripe_customer_id, stripe_subscription_id 
-           FROM tenants 
-           WHERE id = $1 OR email = $2 OR name = $2
-           LIMIT 1`,
-          [tenantId, email]
-        );
+        // Note: email column may not exist in older schemas, so we check name as fallback
+        // First, check if email column exists
+        const columnCheckRes = await client.query(`
+          SELECT column_name 
+          FROM information_schema.columns 
+          WHERE table_name = 'tenants' AND column_name = 'email'
+        `);
+        const hasEmailColumn = columnCheckRes.rows.length > 0;
+        
+        // Build query based on whether email column exists
+        const existingTenantRes = hasEmailColumn
+          ? await client.query(
+              `SELECT id, name, email, plan, stripe_customer_id, stripe_subscription_id 
+               FROM tenants 
+               WHERE id = $1 OR email = $2 OR name = $2
+               LIMIT 1`,
+              [tenantId, email]
+            )
+          : await client.query(
+              `SELECT id, name, plan, stripe_customer_id, stripe_subscription_id 
+               FROM tenants 
+               WHERE id = $1 OR name = $2
+               LIMIT 1`,
+              [tenantId, email]
+            );
 
         let action: 'created' | 'updated' | 'skipped';
         let finalTenantId: string;
@@ -318,29 +336,55 @@ export function registerSyncRoutes(app: FastifyInstance): void {
             action = 'updated';
 
             // Update tenant record
-            await client.query(
-              `UPDATE tenants 
-               SET name = $1,
-                   email = $1,
-                   plan = $2, 
-                   active = $3,
-                   status = $4,
-                   expires_at = $5,
-                   stripe_customer_id = COALESCE($6, stripe_customer_id),
-                   stripe_subscription_id = COALESCE($7, stripe_subscription_id),
-                   updated_at = NOW()
-               WHERE id = $8`,
-              [
-                email,
-                plan,
-                subscription_status === 'active' || subscription_status === 'trialing',
-                subscription_status,
-                expires_at,
-                stripe_customer_id,
-                stripe_subscription_id,
-                tenantId
-              ]
-            );
+            // Build UPDATE query based on which columns exist
+            if (hasEmailColumn) {
+              await client.query(
+                `UPDATE tenants 
+                 SET name = $1,
+                     email = $1,
+                     plan = $2, 
+                     active = $3,
+                     status = $4,
+                     expires_at = $5,
+                     stripe_customer_id = COALESCE($6, stripe_customer_id),
+                     stripe_subscription_id = COALESCE($7, stripe_subscription_id),
+                     updated_at = NOW()
+                 WHERE id = $8`,
+                [
+                  email,
+                  plan,
+                  subscription_status === 'active' || subscription_status === 'trialing',
+                  subscription_status,
+                  expires_at,
+                  stripe_customer_id,
+                  stripe_subscription_id,
+                  tenantId
+                ]
+              );
+            } else {
+              // Fallback for older schema without email column
+              await client.query(
+                `UPDATE tenants 
+                 SET name = $1,
+                     plan = $2, 
+                     active = $3,
+                     status = $4,
+                     expires_at = $5,
+                     stripe_customer_id = COALESCE($6, stripe_customer_id),
+                     stripe_subscription_id = COALESCE($7, stripe_subscription_id)
+                 WHERE id = $8`,
+                [
+                  email,
+                  plan,
+                  subscription_status === 'active' || subscription_status === 'trialing',
+                  subscription_status,
+                  expires_at,
+                  stripe_customer_id,
+                  stripe_subscription_id,
+                  tenantId
+                ]
+              );
+            }
           } else {
             // Different tenantId but same email - potential conflict
             req.log.warn({
@@ -366,23 +410,42 @@ export function registerSyncRoutes(app: FastifyInstance): void {
           req.log.info({ tenantId, email, plan }, 'Creating new tenant from Replit sync');
           action = 'created';
 
-          const insertRes = await client.query(
-            `INSERT INTO tenants(
-              id, name, email, plan, active, status, expires_at, 
-              stripe_customer_id, stripe_subscription_id, created_at, updated_at
-            ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
-            RETURNING id`,
-            [
-              tenantId,      // $1 - id
-              email,         // $2 - name and email (same value)
-              plan,          // $3 - plan
-              subscription_status === 'active' || subscription_status === 'trialing', // $4 - active
-              subscription_status, // $5 - status
-              expires_at,    // $6 - expires_at
-              stripe_customer_id || null, // $7 - stripe_customer_id
-              stripe_subscription_id || null // $8 - stripe_subscription_id
-            ]
-          );
+          // Build INSERT query based on which columns exist
+          const insertRes = hasEmailColumn
+            ? await client.query(
+                `INSERT INTO tenants(
+                  id, name, email, plan, active, status, expires_at, 
+                  stripe_customer_id, stripe_subscription_id, created_at, updated_at
+                ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+                RETURNING id`,
+                [
+                  tenantId,      // $1 - id
+                  email,         // $2 - name and email (same value)
+                  plan,          // $3 - plan
+                  subscription_status === 'active' || subscription_status === 'trialing', // $4 - active
+                  subscription_status, // $5 - status
+                  expires_at,    // $6 - expires_at
+                  stripe_customer_id || null, // $7 - stripe_customer_id
+                  stripe_subscription_id || null // $8 - stripe_subscription_id
+                ]
+              )
+            : await client.query(
+                `INSERT INTO tenants(
+                  id, name, plan, active, status, expires_at, 
+                  stripe_customer_id, stripe_subscription_id, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                RETURNING id`,
+                [
+                  tenantId,      // $1 - id
+                  email,         // $2 - name (email stored here for backward compat)
+                  plan,          // $3 - plan
+                  subscription_status === 'active' || subscription_status === 'trialing', // $4 - active
+                  subscription_status, // $5 - status
+                  expires_at,    // $6 - expires_at
+                  stripe_customer_id || null, // $7 - stripe_customer_id
+                  stripe_subscription_id || null // $8 - stripe_subscription_id
+                ]
+              );
 
           if (insertRes.rows.length === 0) {
             throw new Error('Failed to create tenant: no ID returned');
