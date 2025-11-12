@@ -89,7 +89,8 @@ jobs:
         run: |
           set -e
           H=$(printf YOUR_TEST_KEY | sha256sum | awk '{print $1}')
-          TENANT_ID=$(psql "$DATABASE_URL" -At -c "insert into tenants(name, active, plan) values ('ci', true, 'standard') returning id;")
+          # Trim whitespace and newlines from TENANT_ID to prevent UUID format errors
+          TENANT_ID=$(psql "$DATABASE_URL" -At -c "insert into tenants(name, active, plan) values ('ci', true, 'standard') returning id;" | tr -d '[:space:]')
           psql "$DATABASE_URL" -c "insert into api_keys(key_hash, tenant_id) values ('$H', '$TENANT_ID');"
 
       - name: Start API
