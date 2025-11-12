@@ -392,8 +392,9 @@ export function registerSyncRoutes(app: FastifyInstance): void {
         }
 
         // Insert or update API key
+        // Note: api_keys table has key_hash as primary key, not id
         const apiKeyExistsRes = await client.query(
-          `SELECT id FROM api_keys WHERE key_hash = $1 LIMIT 1`,
+          `SELECT key_hash FROM api_keys WHERE key_hash = $1 LIMIT 1`,
           [hashed_api_key]
         );
 
