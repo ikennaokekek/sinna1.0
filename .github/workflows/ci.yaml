@@ -100,20 +100,58 @@ jobs:
           REDIS_URL: ${{ env.REDIS_URL }}
           PORT: 4000
           STATUS_PAGE_URL: https://sinna.betteruptime.com/
-        run: nohup node apps/api/dist/index.js & echo $! > api.pid
+          NODE_ENV: test
+        run: |
+          echo "🚀 Starting API server on port 4000..."
+          nohup node apps/api/dist/index.js > api.log 2>&1 &
+          echo $! > api.pid
+          echo "API process started with PID: $(cat api.pid)"
+          sleep 2
+          echo "📋 Checking if API process is still running..."
+          if ps -p $(cat api.pid) > /dev/null 2>&1; then
+            echo "✅ API process is running (PID: $(cat api.pid))"
+            echo "📄 Last 20 lines of API log:"
+            tail -n 20 api.log || echo "No log output yet"
+          else
+            echo "❌ API process died immediately!"
+            echo "📄 Full API log:"
+            cat api.log || echo "No log file found"
+            exit 1
+          fi
 
       - name: Wait for API to be ready
         run: |
           echo "⏳ Waiting for API to start on port 4000..."
-          for i in {1..30}; do
+          for i in {1..60}; do
+            # Check if process is still running
+            if ! ps -p $(cat api.pid) > /dev/null 2>&1; then
+              echo "❌ API process died! Checking logs..."
+              tail -n 50 api.log || echo "No log file"
+              exit 1
+            fi
+            # Check if API is responding
             if curl -sSf http://localhost:4000/health > /dev/null 2>&1; then
-              echo "✅ API is ready!"
+              echo "✅ API is ready and responding!"
+              echo "📄 API startup log:"
+              tail -n 30 api.log || echo "No log file"
               exit 0
             fi
-            echo "Attempt $i/30: API not ready yet, waiting 1 second..."
+            if [ $((i % 5)) -eq 0 ]; then
+              echo "Attempt $i/60: API not ready yet, checking process..."
+              echo "Process status: $(ps -p $(cat api.pid) -o pid,stat,cmd --no-headers || echo 'Process not found')"
+              echo "Port 4000 status: $(lsof -i :4000 2>/dev/null | head -n 2 || echo 'Port not in use')"
+            else
+              echo "Attempt $i/60: API not ready yet, waiting 1 second..."
+            fi
             sleep 1
           done
-          echo "❌ API failed to start within 30 seconds"
+          echo "❌ API failed to start within 60 seconds"
+          echo "📄 Full API log:"
+          cat api.log || echo "No log file found"
+          echo "🔍 Process status:"
+          ps aux | grep "node apps/api" || echo "No API process found"
+          echo "🔍 Port 4000 status:"
+          lsof -i :4000 || echo "Port 4000 not in use"
           exit 1
 
       - name: Start dummy workers for queues

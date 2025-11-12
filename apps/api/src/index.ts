@@ -1199,8 +1199,12 @@ async function start() {
     app.log.info({ env: process.env.NODE_ENV }, 'Environment');
     // Startup environment info (no secrets)
     app.log.info({ env: process.env.NODE_ENV || 'development', stripeLiveKeyPresent: isProduction() ? !!process.env.STRIPE_SECRET_KEY_LIVE : false }, 'Startup environment');
+    
+    // Log startup attempt
+    app.log.info({ port, host: '0.0.0.0' }, '🚀 Starting API server...');
     await app.listen({ port, host: '0.0.0.0' });
-    app.log.info({ port }, 'API listening');
+    app.log.info({ port }, '✅ API server is running and listening');
+    console.log(`✅ API server is running on http://0.0.0.0:${port}`);
   } catch (err) {
     app.log.error(err);
     process.exit(1);
