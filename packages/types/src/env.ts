@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export const EnvSchema = z
   .object({
+    DATABASE_URL: z.string().url('DATABASE_URL must be a valid PostgreSQL connection string'),
+
     R2_ACCOUNT_ID: z.string().min(1, 'R2_ACCOUNT_ID is required'),
     R2_ACCESS_KEY_ID: z.string().min(1, 'R2_ACCESS_KEY_ID is required'),
     R2_SECRET_ACCESS_KEY: z.string().min(1, 'R2_SECRET_ACCESS_KEY is required'),
