@@ -8,10 +8,10 @@ on:
 
 env:
   BASE_URL_PRIVATE: https://sinna1-0.onrender.com, http://localhost:4000
-  # TODO: Move DATABASE_URL to GitHub Secrets for better security
-  # Repository Settings → Secrets and variables → Actions → New repository secret
-  DATABASE_URL: postgresql://sinna1_0_user:g8vB4HBdqjK3izSoG0ZJz7D4NyFbsjhz@dpg-d3htvb33fgac73a3ttj0-a.frankfurt-postgres.render.com/sinna1_0?sslmode=require
-  REDIS_URL: rediss://default:AWMYAAIncDFjZGEwYTJlMGJlMjU0YzkzYjdkYjZmYmNhYmViM2VlNnAxMjUzNjg@good-owl-25368.upstash.io:6379
+  # Database and Redis URLs are now stored in GitHub Secrets for security
+  # See GITHUB_SECRETS_SETUP.md for setup instructions
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  REDIS_URL: ${{ secrets.REDIS_URL }}
   # SEED_API_KEY_SECRET: Not needed in CI (dev mode generates random keys)
   # For production, add SEED_API_KEY_SECRET as GitHub Secret
 
@@ -55,7 +55,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install deps
-        run: pnpm install --frozen-lockfile=false
+        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm build
