@@ -296,3 +296,5 @@ MIT License - see LICENSE file for details.
 **Built for streaming platforms worldwide** 🌍
 
 *Sinna makes video content accessible to everyone, everywhere.*
+
+<!-- Setup verified: 2025-11-28 18:42:51 -->
