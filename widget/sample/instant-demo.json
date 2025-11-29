@@ -1,0 +1,78 @@
+{
+  "id": "job_instant_demo_123",
+  "status": "completed",
+  "preset_id": "autism",
+  "source_url": "https://example.com/video.mp4",
+  "created_at": "2024-01-15T10:30:00Z",
+  "completed_at": "2024-01-15T10:32:00Z",
+  "summary": {
+    "message": "Video analysis completed successfully",
+    "text": "Sample instant results - Real analysis in progress..."
+  },
+  "insights": [
+    {
+      "title": "Motion Reduction Applied",
+      "type": "motion_reduction",
+      "severity": "info",
+      "description": "Motion sensitivity adjustments have been applied to reduce visual motion.",
+      "value": "85% reduction",
+      "recommendation": "Consider using this preset for viewers sensitive to motion."
+    },
+    {
+      "title": "Color Palette Adjusted",
+      "type": "color_adjustment",
+      "severity": "success",
+      "description": "Colors have been adjusted to a calmer palette suitable for autism-friendly viewing.",
+      "value": "12 colors modified",
+      "recommendation": "The color scheme now uses muted tones to reduce visual stimulation."
+    },
+    {
+      "title": "Audio Smoothing",
+      "type": "audio_processing",
+      "severity": "info",
+      "description": "Audio levels have been smoothed to reduce sudden volume changes.",
+      "value": "8 peaks normalized"
+    }
+  ],
+  "timeline": [
+    {
+      "time": 0,
+      "timestamp": 0,
+      "title": "Analysis Started",
+      "type": "start",
+      "description": "Video analysis initiated",
+      "severity": "info"
+    },
+    {
+      "time": 15,
+      "timestamp": 15,
+      "title": "Motion Detection",
+      "type": "motion_detected",
+      "description": "High motion detected at 0:15, reduction applied",
+      "severity": "warning"
+    },
+    {
+      "time": 45,
+      "timestamp": 45,
+      "title": "Color Analysis",
+      "type": "color_analysis",
+      "description": "Color palette analyzed and adjusted",
+      "severity": "info"
+    },
+    {
+      "time": 120,
+      "timestamp": 120,
+      "title": "Processing Complete",
+      "type": "complete",
+      "description": "All accessibility adjustments applied successfully",
+      "severity": "success"
+    }
+  ],
+  "artifact_url": "https://example.com/processed-video.mp4",
+  "metadata": {
+    "duration": 120,
+    "format": "mp4",
+    "resolution": "1920x1080",
+    "fps": 30
+  }
+}

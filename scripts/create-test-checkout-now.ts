@@ -1,82 +1,78 @@
-/**
- * Create a Stripe test checkout session for API key testing
- * Usage: pnpm tsx scripts/create-test-checkout-now.ts
- */
-
+#!/usr/bin/env tsx
 import Stripe from 'stripe';
-import 'dotenv/config';
 
-const stripeKey = process.env.STRIPE_SECRET_KEY;
-if (!stripeKey) {
-  console.error('❌ STRIPE_SECRET_KEY not found in environment');
-  process.exit(1);
-}
+const STRIPE_SECRET_KEY = 'sk_test_[REDACTED]';
+const STRIPE_STANDARD_PRICE_ID = 'price_1SLDYEFOUj5aKuFKieTbbTX1';
+const TEST_EMAIL = 'ikennaokeke1996@gmail.com';
+const BASE_URL = 'https://sinna.site';
 
-const stripe = new Stripe(stripeKey, {
-  apiVersion: '2024-12-18.acacia',
-});
-
-const BASE_URL = process.env.BASE_URL_PUBLIC || 'https://sinna.site';
-const PRICE_ID = process.env.STRIPE_STANDARD_PRICE_ID;
-
-if (!PRICE_ID) {
-  console.error('❌ STRIPE_STANDARD_PRICE_ID not found in environment');
-  process.exit(1);
-}
-
-async function createTestCheckout() {
+async function main() {
   try {
-    console.log('🔗 Creating Stripe test checkout session...');
-    console.log(`📧 Customer email: ikennaokeke1996@gmail.com`);
-    console.log(`💰 Price ID: ${PRICE_ID}`);
-    console.log(`🌐 Base URL: ${BASE_URL}\n`);
-
+    const stripe = new Stripe(STRIPE_SECRET_KEY, {
+      apiVersion: '2024-11-20.acacia',
+    });
+    
+    const expiresAt = Math.floor(Date.now() / 1000) + (35 * 60);
+    
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price: PRICE_ID,
-          quantity: 1,
-        },
-      ],
-      customer_email: 'ikennaokeke1996@gmail.com',
+      line_items: [{ price: STRIPE_STANDARD_PRICE_ID, quantity: 1 }],
       success_url: `${BASE_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${BASE_URL}/billing/cancel`,
+      customer_email: TEST_EMAIL,
+      expires_at: expiresAt,
+      payment_method_types: ['card'],
+      allow_promotion_codes: true,
+      billing_address_collection: 'required',
       metadata: {
         test: 'true',
-        created_by: 'test_checkout_script',
+        test_email: TEST_EMAIL,
       },
-      // Set expiration to 35 minutes (Stripe minimum is 30 minutes)
-      expires_at: Math.floor(Date.now() / 1000) + (35 * 60),
     });
-
-    console.log('✅ Checkout session created!\n');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('🔗 CHECKOUT URL:');
-    console.log(session.url);
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-    console.log('📋 Session Details:');
+    
+    if (!session.url) {
+      throw new Error('No checkout URL returned');
+    }
+    
+    console.log('\n' + '='.repeat(70));
+    console.log('✅ TEST CHECKOUT SESSION CREATED!');
+    console.log('='.repeat(70));
+    console.log('\n🔗 CHECKOUT URL (Open in browser):');
+    console.log('\n' + session.url + '\n');
+    console.log('='.repeat(70));
+    console.log('\n📋 Session Details:');
     console.log(`   Session ID: ${session.id}`);
-    console.log(`   Customer Email: ${session.customer_email || 'Will be set during checkout'}`);
-    console.log(`   Expires At: ${session.expires_at ? new Date(session.expires_at * 1000).toISOString() : 'N/A'}`);
-    console.log(`   Status: ${session.status}`);
-    console.log('\n💡 Next Steps:');
-    console.log('   1. Open the checkout URL above');
-    console.log('   2. Complete the payment with a test card');
-    console.log('   3. Check ikennaokeke1996@gmail.com for your API key');
-    console.log('   4. The API key will also be logged in Render logs if email fails\n');
-
-    return session.url;
-  } catch (error) {
-    console.error('❌ Failed to create checkout session:', error);
-    if (error instanceof Stripe.errors.StripeError) {
-      console.error(`   Error type: ${error.type}`);
-      console.error(`   Error message: ${error.message}`);
+    console.log(`   Mode: TEST`);
+    console.log(`   Customer Email: ${TEST_EMAIL}`);
+    console.log(`   Expires: ${new Date(expiresAt * 1000).toLocaleString()}`);
+    console.log('\n💳 TEST CARD DETAILS:');
+    console.log('   Card Number: 4242 4242 4242 4242');
+    console.log('   Expiry: 12/25 (any future date)');
+    console.log('   CVC: 123 (any 3 digits)');
+    console.log('   ZIP: 12345 (any 5 digits)');
+    console.log('\n📧 EMAIL FLOW AFTER PAYMENT:');
+    console.log('   1. Complete payment with test card above');
+    console.log('   2. Stripe sends webhook → checkout.session.completed');
+    console.log('   3. Webhook URL: https://sinna1-0.onrender.com/webhooks/stripe');
+    console.log('   4. API creates tenant + generates API key');
+    console.log('   5. Email sent to:', TEST_EMAIL);
+    console.log('   6. Subject: "Your Sinna API Key is Ready! 🎉"');
+    console.log('\n🔍 VERIFY EMAIL:');
+    console.log('   - Check inbox:', TEST_EMAIL);
+    console.log('   - Check Render logs: https://dashboard.render.com/web/srv-d3hv3lhgv73c73e16jcg → Logs');
+    console.log('   - Search for: "API key email sent successfully"');
+    console.log('\n✅ Ready to test! Complete payment above and check your email!\n');
+    
+  } catch (error: any) {
+    console.error('\n❌ Error creating checkout session:');
+    console.error(error.message);
+    if (error.type === 'StripeInvalidRequestError') {
+      console.error('\n💡 Check that:');
+      console.error('   - STRIPE_SECRET_KEY is valid');
+      console.error('   - STRIPE_STANDARD_PRICE_ID exists in your Stripe TEST account');
     }
     process.exit(1);
   }
 }
 
-createTestCheckout();
-
+main();

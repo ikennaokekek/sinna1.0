@@ -4,6 +4,7 @@
   "description": "Advanced accessibility features API for streaming platforms",
   "main": "dist/index.js",
   "scripts": {
+    "deploy:cdn": "node scripts/deploy-cdn.js",
     "dev": "pnpm -C apps/api dev",
     "dev:worker": "pnpm -C apps/worker dev",
     "build": "pnpm -C packages/types build && pnpm -C apps/api build && pnpm -C apps/worker build",

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sinna Preset Widget Demo</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 40px 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .container {
+      max-width: 1000px;
+      width: 100%;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      padding: 40px;
+      margin-bottom: 32px;
+    }
+
+    h1 {
+      text-align: center;
+      color: #1a1a1a;
+      font-size: 32px;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #666;
+      font-size: 16px;
+      margin-bottom: 40px;
+    }
+
+    .mode-toggle-container {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 24px;
+      padding: 16px;
+      background: #f8f9fa;
+      border-radius: 12px;
+    }
+
+    .mode-toggle-label {
+      font-size: 14px;
+      font-weight: 600;
+      color: #666;
+    }
+
+    .mode-toggle {
+      position: relative;
+      width: 60px;
+      height: 30px;
+      background: #ccc;
+      border-radius: 15px;
+      cursor: pointer;
+      transition: background 0.3s ease;
+    }
+
+    .mode-toggle.active {
+      background: #0066cc;
+    }
+
+    .mode-toggle-slider {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 24px;
+      height: 24px;
+      background: white;
+      border-radius: 50%;
+      transition: transform 0.3s ease;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    .mode-toggle.active .mode-toggle-slider {
+      transform: translateX(30px);
+    }
+
+    .mode-label {
+      font-size: 13px;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 6px;
+      background: #e7f3ff;
+      color: #0066cc;
+    }
+
+    .mode-label.production {
+      background: #d1fae5;
+      color: #059669;
+    }
+
+    .widget-container {
+      margin-top: 32px;
+      padding: 24px;
+      background: #f8f9fa;
+      border-radius: 12px;
+      border: 2px dashed #dee2e6;
+      position: relative;
+      min-height: 400px;
+      transition: opacity 0.3s ease;
+    }
+
+    .widget-container.fading {
+      opacity: 0.5;
+    }
+
+    .info {
+      background: #e7f3ff;
+      border-left: 4px solid #0066cc;
+      padding: 16px;
+      margin-bottom: 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      color: #004085;
+    }
+
+    .info strong {
+      display: block;
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+
+    .code-snippet {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 20px;
+      border-radius: 8px;
+      margin-top: 24px;
+      overflow-x: auto;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .code-snippet code {
+      color: #d4d4d4;
+    }
+
+    .code-snippet .tag {
+      color: #569cd6;
+    }
+
+    .code-snippet .attr {
+      color: #9cdcfe;
+    }
+
+    .code-snippet .string {
+      color: #ce9178;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Sinna Preset Widget</h1>
+    <p class="subtitle">Premium Accessibility Presets for Video Analysis</p>
+
+    <div class="info">
+      <strong>Widget Mode Toggle</strong>
+      Switch between Developer Mode (with built-in theme controls) and Production Mode (CDN version).
+    </div>
+
+    <div class="mode-toggle-container">
+      <span class="mode-toggle-label">Developer</span>
+      <div class="mode-toggle" id="mode-toggle">
+        <div class="mode-toggle-slider"></div>
+      </div>
+      <span class="mode-toggle-label">Production</span>
+      <span class="mode-label" id="current-mode">Developer</span>
+    </div>
+
+    <div class="widget-container" id="widget-container">
+      <sinna-preset
+        id="widget"
+        api-key="sk_test_demo"
+        video-url="https://example.com/video.mp4">
+      </sinna-preset>
+    </div>
+
+    <div class="code-snippet">
+      <code>
+<span class="tag">&lt;!-- Developer Widget (for demos/docs) --&gt;</span><br>
+<span class="tag">&lt;script</span> <span class="attr">type</span>=<span class="string">"module"</span> <span class="attr">src</span>=<span class="string">"../dist/dev-widget.js"</span><span class="tag">&gt;&lt;/script&gt;</span><br>
+<span class="tag">&lt;sinna-preset</span><br>
+&nbsp;&nbsp;<span class="attr">api-key</span>=<span class="string">"sk_test_demo"</span><br>
+&nbsp;&nbsp;<span class="attr">video-url</span>=<span class="string">"https://example.com/video.mp4"</span><span class="tag">&gt;</span><br>
+<span class="tag">&lt;/sinna-preset&gt;</span><br>
+<br>
+<span class="tag">&lt;!-- Live Widget (for production) --&gt;</span><br>
+<span class="tag">&lt;script</span> <span class="attr">type</span>=<span class="string">"module"</span> <span class="attr">src</span>=<span class="string">"https://cdn.sinna.site/widget.js"</span><span class="tag">&gt;&lt;/script&gt;</span><br>
+<span class="tag">&lt;sinna-preset</span><br>
+&nbsp;&nbsp;<span class="attr">api-key</span>=<span class="string">"sk_live_..."</span><br>
+&nbsp;&nbsp;<span class="attr">video-url</span>=<span class="string">"https://example.com/video.mp4"</span><br>
+&nbsp;&nbsp;<span class="attr">theme</span>=<span class="string">"dark"</span><br>
+&nbsp;&nbsp;<span class="attr">accent</span>=<span class="string">"#C3001D"</span><span class="tag">&gt;</span><br>
+<span class="tag">&lt;/sinna-preset&gt;</span>
+      </code>
+    </div>
+  </div>
+
+  <script type="module">
+    let currentMode = 'developer';
+    let widgetScriptLoaded = false;
+    let currentScript = null;
+
+    const modeToggle = document.getElementById('mode-toggle');
+    const currentModeLabel = document.getElementById('current-mode');
+    const widgetContainer = document.getElementById('widget-container');
+    const widgetElement = document.getElementById('widget');
+
+    // Preserve widget attributes
+    function getWidgetAttributes() {
+      return {
+        'api-key': widgetElement?.getAttribute('api-key') || 'sk_test_demo',
+        'video-url': widgetElement?.getAttribute('video-url') || 'https://example.com/video.mp4',
+        'theme': widgetElement?.getAttribute('theme') || '',
+        'accent': widgetElement?.getAttribute('accent') || '',
+        'instant': widgetElement?.getAttribute('instant') || '',
+      };
+    }
+
+    // Load widget script
+    function loadWidgetScript(mode) {
+      return new Promise((resolve, reject) => {
+        // Remove existing script if any
+        if (currentScript) {
+          currentScript.remove();
+        }
+
+        // Create new script
+        const script = document.createElement('script');
+        script.type = 'module';
+        
+        if (mode === 'developer') {
+          script.src = '../dist/dev-widget.js';
+        } else {
+          script.src = 'https://cdn.sinna.site/widget.js';
+        }
+
+        script.onload = () => {
+          currentScript = script;
+          widgetScriptLoaded = true;
+          resolve();
+        };
+
+        script.onerror = () => {
+          reject(new Error(`Failed to load ${mode} widget script`));
+        };
+
+        document.head.appendChild(script);
+      });
+    }
+
+    // Recreate widget element
+    function recreateWidget(attributes) {
+      // Fade out
+      widgetContainer.classList.add('fading');
+
+      setTimeout(() => {
+        // Remove old widget
+        const oldWidget = document.getElementById('widget');
+        if (oldWidget) {
+          oldWidget.remove();
+        }
+
+        // Create new widget
+        const newWidget = document.createElement('sinna-preset');
+        newWidget.id = 'widget';
+
+        // Set attributes
+        Object.entries(attributes).forEach(([key, value]) => {
+          if (value) {
+            newWidget.setAttribute(key, value);
+          }
+        });
+
+        // Append to container
+        widgetContainer.appendChild(newWidget);
+
+        // Fade in
+        setTimeout(() => {
+          widgetContainer.classList.remove('fading');
+        }, 50);
+      }, 300);
+    }
+
+    // Handle mode toggle
+    modeToggle.addEventListener('click', async () => {
+      const newMode = currentMode === 'developer' ? 'production' : 'developer';
+      
+      // Update toggle state
+      if (newMode === 'production') {
+        modeToggle.classList.add('active');
+        currentModeLabel.textContent = 'Production';
+        currentModeLabel.classList.add('production');
+      } else {
+        modeToggle.classList.remove('active');
+        currentModeLabel.textContent = 'Developer';
+        currentModeLabel.classList.remove('production');
+      }
+
+      // Preserve attributes
+      const attributes = getWidgetAttributes();
+
+      // Load new script
+      try {
+        await loadWidgetScript(newMode);
+        
+        // Wait a bit for custom element to register
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Recreate widget
+        recreateWidget(attributes);
+        
+        currentMode = newMode;
+      } catch (error) {
+        console.error('Error switching mode:', error);
+        alert(`Failed to switch to ${newMode} mode: ${error.message}`);
+      }
+    });
+
+    // Initial load
+    loadWidgetScript('developer').catch(error => {
+      console.error('Failed to load initial widget:', error);
+    });
+  </script>
+</body>
+</html>

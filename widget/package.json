@@ -1,0 +1,29 @@
+{
+  "name": "@sinna/widget",
+  "version": "1.0.0",
+  "description": "Sinna accessibility preset widget - Web Component for video accessibility analysis",
+  "type": "module",
+  "main": "widget.js",
+  "scripts": {
+    "build": "node build.js",
+    "preview": "npx serve demo",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "accessibility",
+    "video",
+    "web-component",
+    "sinna",
+    "presets"
+  ],
+  "author": "Sinna",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.19.0"
+  },
+  "files": [
+    "widget.js",
+    "README.md"
+  ]
+}
+

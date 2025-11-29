@@ -1,0 +1,65 @@
+/**
+ * Sinna Widget Theme System
+ * Supports light, dark, and custom accent colors
+ */
+
+/* Light Theme (Default) */
+:host([data-theme="light"]),
+:host(:not([data-theme])) {
+  --sinna-bg: #ffffff;
+  --sinna-fg: #1a1a1a;
+  --sinna-card-bg: #ffffff;
+  --sinna-card-border: #e5e7eb;
+  --sinna-accent: #0066cc;
+  --sinna-accent-hover: #0052a3;
+  --sinna-accent-light: #e7f3ff;
+  --sinna-shadow: rgba(0, 0, 0, 0.1);
+  --sinna-shadow-hover: rgba(0, 0, 0, 0.15);
+  --sinna-shadow-lg: rgba(0, 0, 0, 0.2);
+  --sinna-text-primary: #1a1a1a;
+  --sinna-text-secondary: #666666;
+  --sinna-text-muted: #999999;
+  --sinna-border: #e5e7eb;
+  --sinna-surface: #f8f9fa;
+  --sinna-surface-hover: #e9ecef;
+  --sinna-success: #10b981;
+  --sinna-warning: #f59e0b;
+  --sinna-danger: #ef4444;
+  --sinna-info: #3b82f6;
+  --sinna-gradient-start: #667eea;
+  --sinna-gradient-end: #764ba2;
+}
+
+/* Dark Theme */
+:host([data-theme="dark"]) {
+  --sinna-bg: #0f172a;
+  --sinna-fg: #f1f5f9;
+  --sinna-card-bg: #1e293b;
+  --sinna-card-border: #334155;
+  --sinna-accent: #3b82f6;
+  --sinna-accent-hover: #2563eb;
+  --sinna-accent-light: #1e3a8a;
+  --sinna-shadow: rgba(0, 0, 0, 0.3);
+  --sinna-shadow-hover: rgba(0, 0, 0, 0.4);
+  --sinna-shadow-lg: rgba(0, 0, 0, 0.5);
+  --sinna-text-primary: #f1f5f9;
+  --sinna-text-secondary: #cbd5e1;
+  --sinna-text-muted: #94a3b8;
+  --sinna-border: #334155;
+  --sinna-surface: #1e293b;
+  --sinna-surface-hover: #334155;
+  --sinna-success: #10b981;
+  --sinna-warning: #f59e0b;
+  --sinna-danger: #ef4444;
+  --sinna-info: #3b82f6;
+  --sinna-gradient-start: #4c1d95;
+  --sinna-gradient-end: #7c3aed;
+}
+
+/* Custom Accent Color Override */
+:host([data-accent]) {
+  --sinna-accent: var(--sinna-custom-accent, #0066cc);
+  --sinna-accent-hover: var(--sinna-custom-accent-hover, #0052a3);
+  --sinna-accent-light: var(--sinna-custom-accent-light, #e7f3ff);
+}
+
