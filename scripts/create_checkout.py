@@ -2,10 +2,20 @@
 import requests
 import json
 import sys
+import os
 
-stripe_key = 'sk_live_[REDACTED]'
-price_id = 'price_1SLDYEFOUj5aKuFKieTbbTX1'
-base_url = 'https://sinna.site'
+stripe_key = os.environ.get('STRIPE_SECRET_KEY')
+price_id = os.environ.get('STRIPE_STANDARD_PRICE_ID', 'price_1SLDYEFOUj5aKuFKieTbbTX1')
+base_url = os.environ.get('BASE_URL_PUBLIC', 'https://sinna.site')
+
+if not stripe_key:
+    print('❌ Error: STRIPE_SECRET_KEY environment variable is required')
+    print('\n💡 Set it:')
+    print('   export STRIPE_SECRET_KEY="sk_live_..."')
+    print('   export STRIPE_STANDARD_PRICE_ID="price_..."')
+    print('\nOr get from Render:')
+    print('   https://dashboard.render.com/web/srv-d3hv3lhgv73c73e16jcg → Environment')
+    sys.exit(1)
 
 response = requests.post(
     'https://api.stripe.com/v1/checkout/sessions',

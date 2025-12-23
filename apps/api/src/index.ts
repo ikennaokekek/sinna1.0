@@ -169,30 +169,45 @@ app.addHook('preHandler', async (req, reply) => {
   const key = req.headers['x-api-key'];
   if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
   const h = hashKey(key);
-  const { pool } = getDb();
-  const { rows } = await pool.query(
-    'select t.id as tenant_id, t.active, t.status, t.grace_until, t.expires_at from api_keys k join tenants t on t.id=k.tenant_id where k.key_hash=$1',
-    [h]
-  );
-  const row = rows[0];
-  if (!row) return reply.code(401).send({ code: 'unauthorized' });
   
-  const now = new Date();
-  const inGrace = row.grace_until && now < new Date(row.grace_until);
-  const isExpired = row.expires_at && now >= new Date(row.expires_at);
-  const isActive = row.status === 'active' && row.active && !isExpired;
-  
-  // Check subscription expiration first
-  if (isExpired && !inGrace) {
-    return reply.code(401).send({ code: 'subscription_expired', error: 'Your subscription has expired. Please renew to continue using the API.' });
+  try {
+    const { getDb, withRetry } = await import('./lib/db');
+    const { pool } = getDb();
+    const { rows } = await withRetry(async () => {
+      return await pool.query(
+        'select t.id as tenant_id, t.active, t.status, t.grace_until, t.expires_at from api_keys k join tenants t on t.id=k.tenant_id where k.key_hash=$1',
+        [h]
+      );
+    }, 2, 50);
+    const row = rows[0];
+    if (!row) return reply.code(401).send({ code: 'unauthorized' });
+    
+    const now = new Date();
+    const inGrace = row.grace_until && now < new Date(row.grace_until);
+    const isExpired = row.expires_at && now >= new Date(row.expires_at);
+    const isActive = row.status === 'active' && row.active && !isExpired;
+    
+    // Check subscription expiration first
+    if (isExpired && !inGrace) {
+      return reply.code(401).send({ code: 'subscription_expired', error: 'Your subscription has expired. Please renew to continue using the API.' });
+    }
+    
+    // Check status and active flag
+    if (!isActive && !inGrace) {
+      return reply.code(402).send({ code: 'payment_required', error: 'Your subscription is not active. Please update your payment method.' });
+    }
+    
+    (req as AuthenticatedRequest).tenantId = row.tenant_id as string;
+  } catch (dbError: any) {
+    // Handle database connection errors gracefully
+    if (dbError?.message?.includes('Connection is closed') || 
+        dbError?.code === 'ECONNREFUSED' ||
+        dbError?.code === 'ETIMEDOUT') {
+      return reply.code(503).send({ code: 'service_unavailable', error: 'Database temporarily unavailable. Please try again.' });
+    }
+    // Re-throw other errors
+    throw dbError;
   }
-  
-  // Check status and active flag
-  if (!isActive && !inGrace) {
-    return reply.code(402).send({ code: 'payment_required', error: 'Your subscription is not active. Please update your payment method.' });
-  }
-  
-  (req as AuthenticatedRequest).tenantId = row.tenant_id as string;
 });
 
 // Note: /health route is now registered via registerTopLevelRoutes() in start() to ensure Swagger captures it
@@ -394,11 +409,15 @@ app.get('/readiness', {
   const key = req.headers['x-api-key'];
   if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
   try {
-    const { pool } = getDb();
-    await pool.query('select 1');
-    return reply.send({ db: 'up' });
+    const { checkPoolHealth } = await import('./lib/db');
+    const isHealthy = await checkPoolHealth();
+    if (isHealthy) {
+      return reply.send({ db: 'up', ok: true });
+    } else {
+      return reply.code(503).send({ db: 'down', ok: false });
+    }
   } catch (e) {
-    return reply.code(503).send({ db: 'down' });
+    return reply.code(503).send({ db: 'down', ok: false, error: String(e) });
   }
 });
 
@@ -1131,6 +1150,19 @@ async function start() {
     if (process.env.RUN_MIGRATIONS_ON_BOOT === '1') {
       await runMigrations();
       app.log.info('DB migrations completed');
+    }
+    
+    // Verify database connection health
+    try {
+      const { checkPoolHealth } = await import('./lib/db');
+      const dbHealthy = await checkPoolHealth();
+      if (dbHealthy) {
+        app.log.info('✅ Database connection pool healthy');
+      } else {
+        app.log.warn('⚠️  Database connection pool health check failed');
+      }
+    } catch (err) {
+      app.log.warn({ err }, '⚠️  Database health check error (non-fatal)');
     }
     
     // Verify BullMQ Redis connection (used by queues)

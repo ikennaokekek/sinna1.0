@@ -198,7 +198,7 @@
     <div class="code-snippet">
       <code>
 <span class="tag">&lt;!-- Developer Widget (for demos/docs) --&gt;</span><br>
-<span class="tag">&lt;script</span> <span class="attr">type</span>=<span class="string">"module"</span> <span class="attr">src</span>=<span class="string">"../dist/dev-widget.js"</span><span class="tag">&gt;&lt;/script&gt;</span><br>
+<span class="tag">&lt;script</span> <span class="attr">type</span>=<span class="string">"module"</span> <span class="attr">src</span>=<span class="string">"/dist/dev-widget.js"</span><span class="tag">&gt;&lt;/script&gt;</span><br>
 <span class="tag">&lt;sinna-preset</span><br>
 &nbsp;&nbsp;<span class="attr">api-key</span>=<span class="string">"sk_test_demo"</span><br>
 &nbsp;&nbsp;<span class="attr">video-url</span>=<span class="string">"https://example.com/video.mp4"</span><span class="tag">&gt;</span><br>
@@ -250,7 +250,7 @@
         script.type = 'module';
         
         if (mode === 'developer') {
-          script.src = '../dist/dev-widget.js';
+          script.src = '/dist/dev-widget.js';
         } else {
           script.src = 'https://cdn.sinna.site/widget.js';
         }

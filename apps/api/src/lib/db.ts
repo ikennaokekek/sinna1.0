@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 
 export interface DatabaseClients {
   pool: Pool;
@@ -28,8 +28,120 @@ export function getDb(): DatabaseClients {
     connectionTimeoutMillis: 5000,
     maxUses: 7500,
   });
+
+  // Add connection pool event handlers for monitoring
+  pool.on('error', (err) => {
+    console.error('[DB Pool] Unexpected error on idle client:', err);
+  });
+
+  pool.on('connect', () => {
+    console.log('[DB Pool] New client connected');
+  });
+
+  pool.on('remove', () => {
+    console.log('[DB Pool] Client removed from pool');
+  });
+
   cached = { pool };
   return cached;
+}
+
+/**
+ * Execute a function with a database connection, ensuring proper release
+ * @param fn Function to execute with the connection
+ * @returns Result of the function
+ */
+export async function withConnection<T>(
+  fn: (client: PoolClient) => Promise<T>
+): Promise<T> {
+  const { pool } = getDb();
+  const client = await pool.connect();
+  try {
+    return await fn(client);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Execute a function within a database transaction, with automatic rollback on error
+ * @param fn Function to execute within the transaction
+ * @returns Result of the function
+ */
+export async function withTransaction<T>(
+  fn: (client: PoolClient) => Promise<T>
+): Promise<T> {
+  return withConnection(async (client) => {
+    await client.query('BEGIN');
+    try {
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[DB Transaction] Rollback failed:', rollbackError);
+      }
+      throw error;
+    }
+  });
+}
+
+/**
+ * Check if the database pool is healthy
+ * @returns true if pool is healthy, false otherwise
+ */
+export async function checkPoolHealth(): Promise<boolean> {
+  try {
+    const { pool } = getDb();
+    const result = await pool.query('SELECT NOW()');
+    return result.rows.length > 0;
+  } catch (error) {
+    console.error('[DB Health Check] Failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Retry a database operation with exponential backoff
+ * @param fn Function to retry
+ * @param maxRetries Maximum number of retries (default: 3)
+ * @param initialDelay Initial delay in milliseconds (default: 100)
+ * @returns Result of the function
+ */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  initialDelay: number = 100
+): Promise<T> {
+  let lastError: Error | unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      
+      // Don't retry on non-transient errors
+      const isTransient = 
+        error?.code === 'ECONNREFUSED' ||
+        error?.code === 'ETIMEDOUT' ||
+        error?.code === 'ENOTFOUND' ||
+        error?.message?.includes('Connection is closed') ||
+        error?.message?.includes('terminating connection') ||
+        error?.message?.includes('server closed the connection');
+      
+      if (!isTransient || attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Exponential backoff: 100ms, 200ms, 400ms, etc.
+      const delay = initialDelay * Math.pow(2, attempt);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      console.warn(`[DB Retry] Attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${delay}ms...`);
+    }
+  }
+  throw lastError;
 }
 
 export async function runMigrations(): Promise<void> {

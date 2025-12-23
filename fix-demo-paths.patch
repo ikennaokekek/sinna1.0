@@ -1,0 +1,18 @@
+--- a/widget/demo/index.html
++++ b/widget/demo/index.html
+@@ -240,7 +240,7 @@
+         const script = document.createElement('script');
+         script.type = 'module';
+         
+         if (mode === 'developer') {
+-          script.src = '../dist/dev-widget.js';
++          script.src = '/dist/dev-widget.js';
+         } else {
+           script.src = 'https://cdn.sinna.site/widget.js';
+         }
+@@ -340,7 +340,7 @@
+     // Initial load
+     loadWidgetScript('developer').catch(error => {
+       console.error('Failed to load initial widget:', error);
+     });
+

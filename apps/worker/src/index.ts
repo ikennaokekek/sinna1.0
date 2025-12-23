@@ -10,7 +10,6 @@ try {
 import { Queue, Worker, QueueEvents } from 'bullmq';
 import { uploadToR2 } from './lib/r2';
 import IORedis from 'ioredis';
-import { Pool } from 'pg';
 import OpenAI from 'openai';
 import { createVideoTransformWorker } from './videoTransformWorker';
 
@@ -48,14 +47,33 @@ async function startWorkers() {
   const queues = connection ? qNames.map((n) => new Queue(n, { connection })) : [];
   const events = connection ? qNames.map((n) => new QueueEvents(n, { connection })) : [];
 
-  // Minimal DB client for usage updates
+  // Use shared database pool from API service (if available) or create minimal pool
+  // Note: Worker runs in separate process, so we create a minimal pool with proper config
   const databaseUrl = process.env.DATABASE_URL;
-  const db = databaseUrl
-    ? new Pool({
-        connectionString: databaseUrl,
-        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined as any,
-      })
-    : null;
+  let db: any = null;
+  
+  if (databaseUrl) {
+    // Import Pool dynamically to avoid circular dependencies
+    const { Pool } = await import('pg');
+    db = new Pool({
+      connectionString: databaseUrl,
+      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined as any,
+      max: 5, // Worker needs fewer connections than API
+      min: 1,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 5000,
+      maxUses: 7500,
+    });
+    
+    // Add error handlers
+    db.on('error', (err: Error) => {
+      console.error('[Worker DB Pool] Unexpected error on idle client:', err);
+    });
+    
+    db.on('connect', () => {
+      console.log('[Worker DB Pool] New client connected');
+    });
+  }
 
   async function transcribeWithAssemblyAI(audioUrl: string, opts: { language?: string } = {}): Promise<{ segments: Array<{ start: number; end: number; text: string }> }> {
     const apiKey = process.env.ASSEMBLYAI_API_KEY || '';
@@ -314,6 +332,39 @@ async function startWorkers() {
     console.log('✅ Video transform worker registered');
   }
 
+  // Helper function for retrying DB operations
+  async function retryDbOperation<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    initialDelay: number = 100
+  ): Promise<T> {
+    let lastError: Error | unknown;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error: any) {
+        lastError = error;
+        
+        // Don't retry on non-transient errors
+        const isTransient = 
+          error?.code === 'ECONNREFUSED' ||
+          error?.code === 'ETIMEDOUT' ||
+          error?.message?.includes('Connection is closed') ||
+          error?.message?.includes('terminating connection');
+        
+        if (!isTransient || attempt === maxRetries) {
+          throw error;
+        }
+        
+        // Exponential backoff
+        const delay = initialDelay * Math.pow(2, attempt);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        console.warn(`[Worker DB Retry] Attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${delay}ms...`);
+      }
+    }
+    throw lastError;
+  }
+
   for (const ev of events) {
     ev.on('completed', async ({ jobId, returnvalue }) => {
       try {
@@ -326,18 +377,23 @@ async function startWorkers() {
         if (!tenantId) return;
         const minutes = Number((payload && payload.minutes) || 0);
         const egressBytes = Number((payload && payload.egressBytes) || 0);
-        await db.query(
-          `insert into usage_counters(tenant_id, period_start, minutes_used, jobs, egress_bytes)
-           values ($1, date_trunc('month', now())::date, 0, 0, 0)
-           on conflict (tenant_id) do nothing`,
-          [tenantId]
-        );
-        await db.query(
-          `update usage_counters set minutes_used = minutes_used + $2, egress_bytes = egress_bytes + $3 where tenant_id = $1`,
-          [tenantId, minutes, egressBytes]
-        );
+        
+        // Retry DB operations with exponential backoff
+        await retryDbOperation(async () => {
+          await db.query(
+            `insert into usage_counters(tenant_id, period_start, minutes_used, jobs, egress_bytes)
+             values ($1, date_trunc('month', now())::date, 0, 0, 0)
+             on conflict (tenant_id) do nothing`,
+            [tenantId]
+          );
+          await db.query(
+            `update usage_counters set minutes_used = minutes_used + $2, egress_bytes = egress_bytes + $3 where tenant_id = $1`,
+            [tenantId, minutes, egressBytes]
+          );
+        }, 3, 100);
       } catch (e) {
-        console.error('Failed to update usage on completion', e);
+        console.error('Failed to update usage on completion after retries', e);
+        // Don't crash worker on usage update failures
       }
     });
   }

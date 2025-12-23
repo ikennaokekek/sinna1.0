@@ -734,8 +734,8 @@ class SinnaPresetBase extends HTMLElement {
       <div class="sinna-widget">
         ${this.renderDeveloperUI()}
         <div class="widget-header">
-          <h3>Sinna Accessibility Presets</h3>
-          <p class="subtitle">Select a preset to analyze your video</p>
+          <h3>SINNA 1.0</h3>
+          <p class="subtitle">Accessibility, Automated</p>
         </div>
 
         <div class="preset-selection">

@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import Stripe from 'stripe';
-import { getDb, seedTenantAndApiKey } from '../lib/db';
+import { getDb, seedTenantAndApiKey, withRetry } from '../lib/db';
 import { sendEmailNotice } from '../lib/email';
 import { sendErrorResponse, ErrorCodes } from '../lib/errors';
 import { AuthenticatedRequest, TenantState } from '../types';
@@ -154,10 +154,12 @@ async function handleInvoicePaymentSucceeded(
   }
 
   const { pool } = getDb();
-  const { rows } = await pool.query(
-    'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-    [stripeCustomerId]
-  );
+  const { rows } = await withRetry(async () => {
+    return await pool.query(
+      'SELECT id FROM tenants WHERE stripe_customer_id = $1',
+      [stripeCustomerId]
+    );
+  }, 2, 100);
   
   if (rows.length === 0) {
     req.log.warn({ stripeCustomerId }, 'Tenant not found for Stripe customer in invoice.payment_succeeded');
@@ -170,11 +172,13 @@ async function handleInvoicePaymentSucceeded(
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 30);
   
-  // Update tenant status and expiration
-  await pool.query(
-    'UPDATE tenants SET status = $1, active = $2, expires_at = $3, grace_until = NULL WHERE id = $4',
-    ['active', true, expiresAt, tenantId]
-  );
+  // Update tenant status and expiration with retry
+  await withRetry(async () => {
+    await pool.query(
+      'UPDATE tenants SET status = $1, active = $2, expires_at = $3, grace_until = NULL WHERE id = $4',
+      ['active', true, expiresAt, tenantId]
+    );
+  }, 2, 100);
   
   // Optional: Rotate API key on renewal (uncomment to enable)
   // const { createApiKey } = await import('../utils/keys');

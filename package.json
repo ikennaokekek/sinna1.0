@@ -13,6 +13,7 @@
     "test": "jest",
     "test:vitest": "vitest run",
     "test:heal": "vitest run tests/videoTransform.heal.ts",
+    "verify:production": "tsx scripts/verify-production.ts",
     "watchdog": "tsx scripts/watchdog.ts",
     "watchdog:dev": "tsx watch scripts/watchdog.ts",
     "test:api": "tsx scripts/test-api-endpoints.ts",

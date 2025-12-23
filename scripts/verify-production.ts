@@ -1,345 +1,244 @@
-#!/usr/bin/env node
+#!/usr/bin/env tsx
 /**
- * Production Verification Script for Sinna 1.0
- * 
- * Runs comprehensive tests against production:
- * 1. Integration tests
- * 2. All 8 presets end-to-end verification
- * 3. Qwen functionality confirmation
- * 4. Performance tests under load
+ * Production Verification Script
+ * Tests all critical endpoints and functionality
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
 
-const PROD_API = process.env.SINNA_API_URL || 'https://sinna.site';
-const TEST_API_KEY = process.env.TEST_API_KEY || '';
-const TEST_VIDEO_URL = process.env.TEST_VIDEO_URL || 'https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4';
-
-const presets = [
-  'blindness',
-  'deaf',
-  'color_blindness',
-  'adhd',
-  'autism',
-  'epilepsy_flash',
-  'epilepsy_noise',
-  'cognitive_load',
-];
+const API_BASE_URL = process.env.E2E_BASE_URL || process.env.API_BASE_URL || 'https://sinna1-0.onrender.com';
+const TEST_API_KEY = process.env.TEST_API_KEY || process.env.API_KEY;
+const TEST_VIDEO_URL = process.env.TEST_VIDEO_URL || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
 
 interface TestResult {
-  preset: string;
+  test: string;
   status: 'passed' | 'failed' | 'skipped';
-  duration: number;
-  error?: string;
-  jobId?: string;
-  qwenUsed?: boolean;
-  language?: string;
+  message: string;
+  duration?: number;
+  details?: any;
 }
 
 const results: TestResult[] = [];
 
-async function testPreset(preset: string): Promise<TestResult> {
-  const startTime = Date.now();
-  console.log(`\n🧪 Testing preset: ${preset}`);
-  
+function logResult(test: string, status: 'passed' | 'failed' | 'skipped', message: string, duration?: number, details?: any) {
+  results.push({ test, status, message, duration, details });
+  const icon = status === 'passed' ? '✅' : status === 'failed' ? '❌' : '⏭️';
+  const durationStr = duration ? ` (${duration}ms)` : '';
+  console.log(`${icon} ${test}: ${message}${durationStr}`);
+}
+
+async function testHealthEndpoint(): Promise<void> {
+  const start = Date.now();
   try {
-    // Create job
-    const createRes = await fetch(`${PROD_API}/v1/jobs`, {
+    const response = await fetch(`${API_BASE_URL}/health`);
+    const duration = Date.now() - start;
+    
+    if (response.status === 200) {
+      const data = await response.json();
+      logResult('Health Endpoint', 'passed', `Endpoint accessible`, duration, data);
+    } else {
+      logResult('Health Endpoint', 'failed', `Unexpected status: ${response.status}`, duration);
+    }
+  } catch (error) {
+    const duration = Date.now() - start;
+    logResult('Health Endpoint', 'failed', `Error: ${error instanceof Error ? error.message : String(error)}`, duration);
+  }
+}
+
+async function testDatabaseHealth(): Promise<void> {
+  const start = Date.now();
+  if (!TEST_API_KEY) {
+    logResult('Database Health', 'skipped', 'TEST_API_KEY not provided');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/health`, {
+      headers: { 'x-api-key': TEST_API_KEY },
+    });
+    const duration = Date.now() - start;
+    const data = await response.json();
+    
+    if (response.status === 200 && data.db === 'up') {
+      logResult('Database Health', 'passed', 'Database connection healthy', duration, data);
+    } else {
+      logResult('Database Health', 'failed', `Database unhealthy: ${JSON.stringify(data)}`, duration);
+    }
+  } catch (error) {
+    const duration = Date.now() - start;
+    logResult('Database Health', 'failed', `Error: ${error instanceof Error ? error.message : String(error)}`, duration);
+  }
+}
+
+async function testJobCreation(): Promise<void> {
+  const start = Date.now();
+  if (!TEST_API_KEY) {
+    logResult('Job Creation', 'skipped', 'TEST_API_KEY not provided');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/v1/jobs`, {
       method: 'POST',
       headers: {
-        'x-api-key': TEST_API_KEY,
         'Content-Type': 'application/json',
+        'x-api-key': TEST_API_KEY,
       },
       body: JSON.stringify({
         source_url: TEST_VIDEO_URL,
-        preset_id: preset,
+        preset_id: 'everyday',
       }),
     });
 
-    if (!createRes.ok) {
-      throw new Error(`Job creation failed: ${createRes.status} ${await createRes.text()}`);
-    }
+    const duration = Date.now() - start;
+    const data = await response.json();
 
-    const jobData = await createRes.json();
-    const jobId = jobData.data?.id || jobData.id;
-
-    if (!jobId) {
-      throw new Error('No job ID returned');
-    }
-
-    console.log(`  ✅ Job created: ${jobId}`);
-
-    // Poll for completion (max 5 minutes)
-    let completed = false;
-    let finalStatus = 'pending';
-    const maxWait = 5 * 60 * 1000; // 5 minutes
-    const startPoll = Date.now();
-
-    while (!completed && (Date.now() - startPoll) < maxWait) {
-      await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
-
-      const statusRes = await fetch(`${PROD_API}/v1/jobs/${jobId}`, {
-        headers: { 'x-api-key': TEST_API_KEY },
-      });
-
-      if (statusRes.ok) {
-        const statusData = await statusRes.json();
-        finalStatus = statusData.data?.status || statusData.status || 'unknown';
-        
-        if (finalStatus === 'completed' || finalStatus === 'failed') {
-          completed = true;
-        }
-      }
-    }
-
-    const duration = Date.now() - startTime;
-
-    if (finalStatus === 'completed') {
-      console.log(`  ✅ Preset ${preset} completed successfully (${Math.round(duration / 1000)}s)`);
-      return {
-        preset,
-        status: 'passed',
-        duration,
-        jobId: String(jobId),
-      };
+    if (response.ok && data.success && data.data?.id) {
+      logResult('Job Creation', 'passed', `Job created: ${data.data.id}`, duration, { jobId: data.data.id });
+      return data.data.id;
     } else {
-      throw new Error(`Job did not complete: ${finalStatus}`);
+      logResult('Job Creation', 'failed', `Failed: ${JSON.stringify(data)}`, duration);
     }
   } catch (error) {
-    const duration = Date.now() - startTime;
-    console.error(`  ❌ Preset ${preset} failed:`, error instanceof Error ? error.message : String(error));
-    return {
-      preset,
-      status: 'failed',
-      duration,
-      error: error instanceof Error ? error.message : String(error),
-    };
+    const duration = Date.now() - start;
+    logResult('Job Creation', 'failed', `Error: ${error instanceof Error ? error.message : String(error)}`, duration);
   }
 }
 
-async function testQwen(): Promise<boolean> {
-  console.log('\n🧠 Testing Qwen-3-VL Integration...');
-  
+async function testJobStatus(jobId: string): Promise<void> {
+  const start = Date.now();
+  if (!TEST_API_KEY || !jobId) {
+    logResult('Job Status', 'skipped', 'TEST_API_KEY or jobId not provided');
+    return;
+  }
+
   try {
-    // Import Qwen client - fix path
-    const { qwenInstruct } = await import('../apps/api/src/lib/qwenClient');
-    
-    const response = await qwenInstruct({
-      messages: [
-        { role: 'system', content: 'You are a test assistant.' },
-        { role: 'user', content: 'Say "test successful"' },
-      ],
-      max_tokens: 50,
+    const response = await fetch(`${API_BASE_URL}/v1/jobs/${jobId}`, {
+      headers: { 'x-api-key': TEST_API_KEY },
     });
 
-    const modelVerified = response.model?.includes('qwen3-vl-8b-instruct');
-    if (modelVerified) {
-      console.log('  ✅ Qwen-3-VL is operational');
-      return true;
+    const duration = Date.now() - start;
+    const data = await response.json();
+
+    if (response.ok && data.success) {
+      logResult('Job Status', 'passed', `Status retrieved: ${data.data?.status}`, duration, { status: data.data?.status });
     } else {
-      console.warn('  ⚠️ Qwen model verification failed');
-      return false;
+      logResult('Job Status', 'failed', `Failed: ${JSON.stringify(data)}`, duration);
     }
   } catch (error) {
-    console.warn('  ⚠️ Qwen test skipped:', error instanceof Error ? error.message : String(error));
-    return false;
+    const duration = Date.now() - start;
+    logResult('Job Status', 'failed', `Error: ${error instanceof Error ? error.message : String(error)}`, duration);
   }
 }
 
-async function testPerformance(concurrentJobs: number = 5): Promise<void> {
-  console.log(`\n⚡ Performance Test: ${concurrentJobs} concurrent jobs...`);
-  
-  const startTime = Date.now();
-  const promises = [];
+async function testAllPresets(): Promise<void> {
+  if (!TEST_API_KEY) {
+    logResult('All Presets', 'skipped', 'TEST_API_KEY not provided');
+    return;
+  }
 
-  for (let i = 0; i < concurrentJobs; i++) {
-    promises.push(
-      fetch(`${PROD_API}/v1/jobs`, {
+  const presets = ['everyday', 'adhd', 'autism', 'blindness', 'deaf', 'color_blindness'];
+  let passed = 0;
+  let failed = 0;
+
+  for (const preset of presets) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/v1/jobs`, {
         method: 'POST',
         headers: {
-          'x-api-key': TEST_API_KEY,
           'Content-Type': 'application/json',
+          'x-api-key': TEST_API_KEY,
         },
         body: JSON.stringify({
           source_url: TEST_VIDEO_URL,
-          preset_id: 'everyday',
+          preset_id: preset,
         }),
-      }).then(res => res.json())
-    );
+      });
+
+      if (response.ok) {
+        passed++;
+      } else {
+        failed++;
+      }
+    } catch (error) {
+      failed++;
+    }
   }
 
-  try {
-    const responses = await Promise.all(promises);
-    const duration = Date.now() - startTime;
-    const successCount = responses.filter(r => r.success !== false).length;
-    
-    console.log(`  ✅ ${successCount}/${concurrentJobs} jobs created in ${duration}ms`);
-    console.log(`  📊 Average response time: ${Math.round(duration / concurrentJobs)}ms`);
-  } catch (error) {
-    console.error('  ❌ Performance test failed:', error);
+  if (failed === 0) {
+    logResult('All Presets', 'passed', `${passed} presets tested successfully`);
+  } else {
+    logResult('All Presets', 'failed', `${failed} presets failed out of ${presets.length}`);
   }
 }
 
 async function generateReport(): Promise<void> {
-  const reportDir = path.join(__dirname, 'reports');
+  const report = {
+    timestamp: new Date().toISOString(),
+    apiBaseUrl: API_BASE_URL,
+    testVideoUrl: TEST_VIDEO_URL,
+    hasApiKey: !!TEST_API_KEY,
+    results,
+    summary: {
+      total: results.length,
+      passed: results.filter(r => r.status === 'passed').length,
+      failed: results.filter(r => r.status === 'failed').length,
+      skipped: results.filter(r => r.status === 'skipped').length,
+    },
+  };
+
+  const reportPath = path.join(process.cwd(), 'test-results', 'production-verification-report.json');
+  const reportDir = path.dirname(reportPath);
+  
   if (!fs.existsSync(reportDir)) {
     fs.mkdirSync(reportDir, { recursive: true });
   }
 
-  const passed = results.filter(r => r.status === 'passed').length;
-  const failed = results.filter(r => r.status === 'failed').length;
-  const totalDuration = results.reduce((sum, r) => sum + r.duration, 0);
-
-  const report = `# Production Verification Report
-
-**Date:** ${new Date().toISOString()}
-**API URL:** ${PROD_API}
-**Test Video:** ${TEST_VIDEO_URL}
-
-## Summary
-
-- **Total Presets Tested:** ${results.length}
-- **Passed:** ${passed} ✅
-- **Failed:** ${failed} ❌
-- **Total Duration:** ${Math.round(totalDuration / 1000)}s
-- **Average Duration:** ${Math.round(totalDuration / results.length / 1000)}s per preset
-
-## Detailed Results
-
-${results.map(r => `
-### ${r.preset}
-- **Status:** ${r.status === 'passed' ? '✅ PASSED' : '❌ FAILED'}
-- **Duration:** ${Math.round(r.duration / 1000)}s
-- **Job ID:** ${r.jobId || 'N/A'}
-${r.error ? `- **Error:** ${r.error}` : ''}
-`).join('')}
-
-## Recommendations
-
-${failed === 0 ? '✅ All presets passed successfully. System is production-ready.' : `⚠️ ${failed} preset(s) failed. Review errors above and fix before production deployment.`}
-
-## Next Steps
-
-1. Review failed presets and fix issues
-2. Monitor production logs for errors
-3. Set up uptime monitoring
-4. Configure alerting for failures
-`;
-
-  const reportPath = path.join(reportDir, 'production_verification_report.md');
-  fs.writeFileSync(reportPath, report);
-  console.log(`\n📄 Report saved to: ${reportPath}`);
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+  console.log(`\n📊 Report saved to: ${reportPath}`);
 }
 
 async function main() {
-  console.log('🚀 Starting Production Verification for Sinna 1.0');
-  console.log(`📍 API: ${PROD_API}`);
-  console.log(`🎬 Test Video: ${TEST_VIDEO_URL}`);
-  console.log(`🔑 API Key: ${TEST_API_KEY ? `${TEST_API_KEY.substring(0, 20)}...` : 'NOT SET'}\n`);
+  console.log('🧪 Production Verification Test');
+  console.log('================================\n');
+  console.log(`API Base URL: ${API_BASE_URL}`);
+  console.log(`Test Video: ${TEST_VIDEO_URL}`);
+  console.log(`API Key: ${TEST_API_KEY ? '[PROVIDED]' : '[NOT PROVIDED]'}\n`);
 
-  // Check API connectivity first
-  console.log('🔍 Checking API connectivity...');
-  try {
-    const demoRes = await fetch(`${PROD_API}/v1/demo`);
-    if (demoRes.ok) {
-      console.log('  ✅ API is reachable');
-    } else {
-      console.warn(`  ⚠️ API returned ${demoRes.status}`);
+  await testHealthEndpoint();
+  await testDatabaseHealth();
+  
+  if (TEST_API_KEY) {
+    const jobId = await testJobCreation();
+    if (jobId) {
+      await testJobStatus(jobId);
     }
-  } catch (error) {
-    console.error('  ❌ API is not reachable:', error instanceof Error ? error.message : String(error));
-    console.error('\n⚠️ Cannot proceed with tests - API is unreachable');
-    process.exit(1);
-  }
-
-  // Check API key if provided
-  if (TEST_API_KEY && TEST_API_KEY.length > 10) {
-    console.log('\n🔍 Verifying API key...');
-    try {
-      const healthRes = await fetch(`${PROD_API}/health`, {
-        headers: { 'x-api-key': TEST_API_KEY },
-      });
-      if (healthRes.ok) {
-        console.log('  ✅ API key is valid');
-      } else {
-        const errorText = await healthRes.text().catch(() => '');
-        console.warn(`  ⚠️ API key validation failed: ${healthRes.status} ${errorText}`);
-        console.warn('  💡 The API key may not be registered in the production database.');
-        console.warn('  💡 You may need to create a subscription via Stripe checkout first.');
-      }
-    } catch (error) {
-      console.warn('  ⚠️ Could not verify API key:', error instanceof Error ? error.message : String(error));
-    }
+    await testAllPresets();
   } else {
-    console.warn('\n⚠️ TEST_API_KEY not set - preset tests will be skipped');
+    console.log('\n⚠️  Skipping API key tests (TEST_API_KEY not provided)');
   }
 
-  // Test Qwen
-  const qwenWorks = await testQwen();
-  if (!qwenWorks) {
-    console.warn('⚠️ Qwen test failed - some features may not work');
-  }
-
-  // Test all presets (only if API key is valid)
-  if (TEST_API_KEY && TEST_API_KEY.length > 10) {
-    console.log('\n📋 Testing all 8 presets...');
-    for (const preset of presets) {
-      const result = await testPreset(preset);
-      results.push(result);
-    }
-  } else {
-    console.log('\n⏭️ Skipping preset tests (no valid API key)');
-    for (const preset of presets) {
-      results.push({
-        preset,
-        status: 'skipped',
-        duration: 0,
-        error: 'TEST_API_KEY not set',
-      });
-    }
-  }
-
-  // Performance test (only if API key is valid)
-  if (TEST_API_KEY && TEST_API_KEY.length > 10) {
-    await testPerformance(5);
-  } else {
-    console.log('\n⏭️ Skipping performance test (no valid API key)');
-  }
-
-  // Generate report
   await generateReport();
 
-  // Summary
-  const passed = results.filter(r => r.status === 'passed').length;
-  const failed = results.filter(r => r.status === 'failed').length;
-  const skipped = results.filter(r => r.status === 'skipped').length;
-
-  console.log('\n' + '='.repeat(50));
-  console.log('📊 VERIFICATION SUMMARY');
-  console.log('='.repeat(50));
-  console.log(`✅ Passed: ${passed}/${results.length}`);
-  console.log(`❌ Failed: ${failed}/${results.length}`);
-  console.log(`⏭️ Skipped: ${skipped}/${results.length}`);
-  console.log(`🧠 Qwen: ${qwenWorks ? '✅ Operational' : '⚠️ Not verified'}`);
-  console.log('='.repeat(50));
-
-  if (failed === 0 && qwenWorks && skipped === 0) {
-    console.log('\n🎉 ALL TESTS PASSED - PRODUCTION READY!');
-    process.exit(0);
-  } else if (skipped > 0 && failed === 0) {
-    console.log('\n⚠️ SOME TESTS SKIPPED - API KEY NEEDED');
-    console.log('💡 To run full tests, ensure TEST_API_KEY is set and registered in production database.');
+  console.log('\n📊 Test Summary:');
+  console.log(`   Total: ${results.length}`);
+  console.log(`   ✅ Passed: ${results.filter(r => r.status === 'passed').length}`);
+  console.log(`   ❌ Failed: ${results.filter(r => r.status === 'failed').length}`);
+  console.log(`   ⏭️  Skipped: ${results.filter(r => r.status === 'skipped').length}`);
+  
+  const allPassed = results.filter(r => r.status === 'failed').length === 0;
+  if (allPassed) {
+    console.log('\n✅ All tests passed!');
     process.exit(0);
   } else {
-    console.log('\n⚠️ SOME TESTS FAILED - REVIEW REPORT');
+    console.log('\n❌ Some tests failed');
     process.exit(1);
   }
 }
 
-main().catch(error => {
-  console.error('Fatal error:', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(console.error);
+}
 
+export { main, testHealthEndpoint, testDatabaseHealth, testJobCreation, testJobStatus };

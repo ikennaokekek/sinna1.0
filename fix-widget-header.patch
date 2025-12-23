@@ -1,0 +1,13 @@
+--- a/widget/src/SinnaPresetBase.js
++++ b/widget/src/SinnaPresetBase.js
+@@ -640,7 +640,7 @@
+       ${this.getStyles()}
+       <div class="sinna-widget">
+         ${this.renderDeveloperUI()}
+         <div class="widget-header">
+-          <h3>Sinna Accessibility Presets</h3>
+-          <p class="subtitle">Select a preset to analyze your video</p>
++          <h3>SINNA 1.0</h3>
++          <p class="subtitle">Accessibility, Automated</p>
+         </div>
+

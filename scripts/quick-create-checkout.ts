@@ -1,14 +1,25 @@
 #!/usr/bin/env tsx
 import Stripe from 'stripe';
 
-const STRIPE_SECRET_KEY = 'sk_live_[REDACTED]';
-const STRIPE_STANDARD_PRICE_ID = 'price_1SLDYEFOUj5aKuFKieTbbTX1';
-const BASE_URL = 'https://sinna.site';
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const STRIPE_STANDARD_PRICE_ID = process.env.STRIPE_STANDARD_PRICE_ID || 'price_1SLDYEFOUj5aKuFKieTbbTX1';
+const BASE_URL = process.env.BASE_URL_PUBLIC || 'https://sinna.site';
+
+if (!STRIPE_SECRET_KEY) {
+  console.error('❌ Error: STRIPE_SECRET_KEY environment variable is required');
+  console.error('\n💡 Set it:');
+  console.error('   export STRIPE_SECRET_KEY="sk_live_..."');
+  console.error('   export STRIPE_STANDARD_PRICE_ID="price_..."');
+  console.error('\nOr get from Render:');
+  console.error('   https://dashboard.render.com/web/srv-d3hv3lhgv73c73e16jcg → Environment');
+  process.exit(1);
+}
 
 async function main() {
   try {
-    const stripe = new Stripe(STRIPE_SECRET_KEY, {
-      apiVersion: '2024-11-20.acacia',
+    // TypeScript: STRIPE_SECRET_KEY is guaranteed to be defined here due to check above
+    const stripe = new Stripe(STRIPE_SECRET_KEY!, {
+      apiVersion: '2023-10-16',
     });
     
     const expiresAt = Math.floor(Date.now() / 1000) + (35 * 60);
