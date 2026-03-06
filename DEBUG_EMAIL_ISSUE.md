@@ -2,7 +2,7 @@
 
 ## ✅ What We Know
 
-1. ✅ `ENABLE_RENDER_CHECKOUT_HANDLER=true` is set
+1. ✅ Render processes `checkout.session.completed` and calls onboarding service (no skip).
 2. ✅ Payment completed successfully
 3. ❌ Email not received
 
@@ -41,12 +41,12 @@ Go to Render Dashboard → Logs and search for:
 **What to Look For:**
 
 ✅ **Good Signs:**
-- `"Processing checkout.session.completed (ENABLE_RENDER_CHECKOUT_HANDLER=true)"`
-- `"Tenant and API key created successfully"`
-- `"API key email sent successfully"`
+- `"Processing checkout.session.completed (Render → onboarding service)"`
+- `"Calling onboarding service POST /internal/onboard"`
+- `"Replit onboarding successful"` or `"API key email sent successfully"`
 
 ❌ **Problem Signs:**
-- `"Skipping checkout.session.completed handler"` → Handler not enabled
+- `"Replit onboarding failed after retries"` → Onboarding service or network issue
 - `"No email service configured"` → Email service missing
 - `"Failed to send API key email"` → Email service error
 - `"API KEY FOR MANUAL RETRIEVAL"` → Email failed, but key is logged
@@ -152,15 +152,14 @@ pnpm tsx scripts/manually-send-api-key-email.ts ikennaokeke1996@gmail.com
 
 ---
 
-### Issue 4: Handler Still Skipped
+### Issue 4: Onboarding call failed
 
 **Symptoms:**
-- Logs show: `"Skipping checkout.session.completed handler"`
+- Logs show: `"Replit onboarding failed after retries"` or `"Missing onboarding config"`
 
 **Fix:**
-1. Verify `ENABLE_RENDER_CHECKOUT_HANDLER=true` in Render
-2. Check it's exactly `"true"` (not `"True"` or `"TRUE"`)
-3. Redeploy service
+1. Verify `ONBOARD_SERVICE_URL` and `INTERNAL_SERVICE_SECRET` are set in Render and match the Replit onboarding service.
+2. Ensure the onboarding service is reachable and returns 2xx for valid HMAC-signed requests.
 
 ---
 
@@ -206,7 +205,7 @@ If webhook wasn't received:
 - [ ] Verify email service is configured
 - [ ] Test email service directly
 - [ ] Check Stripe webhook status
-- [ ] Verify `ENABLE_RENDER_CHECKOUT_HANDLER=true`
+- [ ] Verify `ONBOARD_SERVICE_URL` and `INTERNAL_SERVICE_SECRET` are set
 - [ ] Check spam folder
 - [ ] Get API key from logs if email failed
 

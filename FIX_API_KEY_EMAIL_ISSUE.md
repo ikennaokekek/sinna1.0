@@ -1,37 +1,15 @@
 # 🔧 Fix: API Key Email Not Sent After Payment
 
-## 🔍 Problem Identified
+## Current architecture
 
-The `checkout.session.completed` webhook handler is **DISABLED by default** because the system expects Replit to handle checkout and email delivery.
-
-**Code Location:** `apps/api/src/routes/webhooks.ts` (lines 100-116)
-
-```typescript
-if (process.env.ENABLE_RENDER_CHECKOUT_HANDLER === 'true') {
-  // Process checkout and send email
-} else {
-  // Skip - handled by Replit
-}
-```
+Stripe → Render (`/webhooks/stripe`) → Replit onboarding service (`/internal/onboard`).  
+Render **always** processes `checkout.session.completed` (no skip, no feature flag) and calls the onboarding service.
 
 ---
 
-## ✅ Solution 1: Enable Render Checkout Handler (Recommended)
+## ✅ Solution 1: Verify onboarding and email
 
-Enable the Render handler to process checkout sessions and send API key emails:
-
-### Step 1: Add Environment Variable in Render
-
-1. Go to: https://dashboard.render.com/web/srv-d3hv3lhgv73c73e16jcg
-2. Click **"Environment"** tab
-3. Click **"Add Environment Variable"**
-4. Add:
-   - **Key:** `ENABLE_RENDER_CHECKOUT_HANDLER`
-   - **Value:** `true`
-5. Click **"Save Changes"**
-6. **Redeploy** the service (or wait for auto-deploy)
-
-### Step 2: Verify Email Service is Configured
+### Step 1: Verify Render environment
 
 Make sure these are set in Render environment:
 - `RESEND_API_KEY` OR `SENDGRID_API_KEY` (at least one)
@@ -97,9 +75,9 @@ If Replit handled the checkout, check if it synced to Render:
 ### 1. Check Render Logs
 
 Go to Render Dashboard → Logs and search for:
-- `"checkout.session.completed"`
-- `"Skipping checkout.session.completed handler"`
-- `"API key email sent successfully"`
+- `"checkout.session.completed"` or `"Processing checkout.session.completed (Render → onboarding service)"`
+- `"Calling onboarding service POST /internal/onboard"`
+- `"Replit onboarding successful"` or `"API key email sent successfully"`
 - `"Failed to send API key email"`
 
 ### 2. Check Webhook Configuration
@@ -119,30 +97,10 @@ Verify email service is working:
 
 ---
 
-## 🚀 Quick Fix (Enable Handler Now)
+## 📋 Current flow
 
-**Add this to Render environment variables:**
-
-```
-ENABLE_RENDER_CHECKOUT_HANDLER=true
-```
-
-Then redeploy or wait for auto-deploy. Future payments will automatically send API key emails.
-
----
-
-## 📋 After Enabling Handler
-
-Once `ENABLE_RENDER_CHECKOUT_HANDLER=true` is set:
-
-1. **New payments** will automatically:
-   - Create tenant
-   - Generate API key
-   - Send email with API key
-
-2. **For existing payment** (that didn't get email):
-   - Use Solution 2 (manually retrieve)
-   - Or trigger webhook again from Stripe Dashboard
+1. **New payments:** Render always processes `checkout.session.completed`, calls the onboarding service; tenant/API key and email are handled there.
+2. **If email was missed:** Use Solution 2 (manually retrieve) or re-send the webhook from Stripe Dashboard.
 
 ---
 

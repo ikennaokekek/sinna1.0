@@ -148,28 +148,12 @@ REPLIT_IP_ALLOWLIST=1.2.3.4,5.6.7.8
 
 Comma-separated list of Replit server IP addresses.
 
-#### Webhook Handler Control
+## Webhook Handler (Current Architecture)
 
-```bash
-ENABLE_RENDER_CHECKOUT_HANDLER=false
-```
+Stripe → Render (`/webhooks/stripe`) → Replit onboarding service (`/internal/onboard`).
 
-- `false` (default): Replit handles checkout, Render only syncs
-- `true`: Enable Render's checkout handler for backward compatibility
-
-## Webhook Handler Changes
-
-The `checkout.session.completed` webhook handler has been **deprioritized**:
-
-- ✅ Still receives webhook events
-- ✅ Logs the event for monitoring
-- ⚠️ Only processes if `ENABLE_RENDER_CHECKOUT_HANDLER=true`
-- 📝 Default behavior: Skip processing (handled by Replit)
-
-This allows:
-- Gradual migration
-- Fallback if needed
-- Monitoring of webhook delivery
+- `checkout.session.completed` is **always processed** by Render (no skip, no feature flag).
+- Render builds the onboarding payload and calls `callReplitInternalOnboard`; success/failure is logged and `webhook_events` / `onboarding_logs` are updated.
 
 ## Database Schema
 

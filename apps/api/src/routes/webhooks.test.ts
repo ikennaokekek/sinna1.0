@@ -1,27 +1,50 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Stripe from 'stripe';
+import { handleCheckoutSessionCompleted } from './webhooks';
 
-// Mock dependencies
+const logContext = { requestId: 'test' };
+
+function createLogger() {
+  return {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+}
+
+// Mock DB so insertOnboardingLog and markEventProcessed don't throw
 vi.mock('../lib/db', () => ({
-  getDb: vi.fn(),
-  seedTenantAndApiKey: vi.fn(),
+  getDb: () => ({
+    pool: {
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+    },
+  }),
 }));
 
-vi.mock('../lib/email', () => ({
-  sendEmailNotice: vi.fn().mockResolvedValue(undefined),
-}));
-
-describe('Stripe Webhook Handlers', () => {
+describe('Stripe Webhook - checkout.session.completed (internal onboard)', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    delete process.env.ONBOARD_SERVICE_URL;
+    delete process.env.INTERNAL_SERVICE_SECRET;
   });
 
-  it('should handle checkout.session.completed event', async () => {
-    const mockEvent: Stripe.Event = {
+  it('calls onboarding service POST /internal/onboard when session is paid and complete', async () => {
+    process.env.ONBOARD_SERVICE_URL = 'https://sinna-onboarding-service.replit.app';
+    process.env.INTERNAL_SERVICE_SECRET = 'internal_secret';
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => '',
+    });
+    vi.stubGlobal('fetch', fetchMock as any);
+
+    const event: Stripe.Event = {
       id: 'evt_test',
       object: 'event',
       api_version: '2023-10-16',
-      created: Date.now() / 1000,
+      created: Math.floor(Date.now() / 1000),
       livemode: false,
       pending_webhooks: 0,
       request: null,
@@ -30,64 +53,70 @@ describe('Stripe Webhook Handlers', () => {
         object: {
           id: 'cs_test',
           object: 'checkout.session',
-          customer: 'cus_test123',
-          customer_details: {
-            email: 'test@example.com',
-          },
+          payment_status: 'paid',
+          status: 'complete',
+          customer_email: 'test@example.com',
+          customer: 'cus_123',
+          subscription: 'sub_456',
         } as Stripe.Checkout.Session,
       },
     };
 
-    // Test structure - actual implementation would require full Fastify setup
-    expect(mockEvent.type).toBe('checkout.session.completed');
-    expect(mockEvent.data.object.customer_details?.email).toBe('test@example.com');
+    const log = createLogger();
+    const req = { log } as any;
+
+    await handleCheckoutSessionCompleted(event, req, logContext);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://sinna-onboarding-service.replit.app/internal/onboard');
+    expect(init.method).toBe('POST');
+    expect(init.headers['Content-Type']).toBe('application/json');
+    expect(init.headers['X-Internal-Timestamp']).toBeDefined();
+    expect(init.headers['X-Internal-Signature']).toBeDefined();
+
+    const body = JSON.parse(init.body);
+    expect(body.eventId).toBe('evt_test');
+    expect(body.stripeSessionId).toBe('cs_test');
+    expect(body.stripeCustomerId).toBe('cus_123');
+    expect(body.subscriptionId).toBe('sub_456');
+    expect(body.email).toBe('test@example.com');
+    expect(body.plan).toBe('standard');
+    expect(body.timestamp).toBeDefined();
   });
 
-  it('should handle invoice.payment_succeeded event', async () => {
-    const mockEvent: Stripe.Event = {
+  it('does not call onboarding service when session is not paid', async () => {
+    process.env.ONBOARD_SERVICE_URL = 'https://sinna-onboarding-service.replit.app';
+    process.env.INTERNAL_SERVICE_SECRET = 'internal_secret';
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    vi.stubGlobal('fetch', fetchMock as any);
+
+    const event: Stripe.Event = {
       id: 'evt_test',
       object: 'event',
       api_version: '2023-10-16',
-      created: Date.now() / 1000,
+      created: Math.floor(Date.now() / 1000),
       livemode: false,
       pending_webhooks: 0,
       request: null,
-      type: 'invoice.payment_succeeded',
+      type: 'checkout.session.completed',
       data: {
         object: {
-          id: 'in_test',
-          object: 'invoice',
-          customer: 'cus_test123',
-        } as Stripe.Invoice,
-      },
-    };
-
-    expect(mockEvent.type).toBe('invoice.payment_succeeded');
-    expect(mockEvent.data.object.customer).toBe('cus_test123');
-  });
-
-  it('should handle invoice.payment_failed event', async () => {
-    const mockEvent: Stripe.Event = {
-      id: 'evt_test',
-      object: 'event',
-      api_version: '2023-10-16',
-      created: Date.now() / 1000,
-      livemode: false,
-      pending_webhooks: 0,
-      request: null,
-      type: 'invoice.payment_failed',
-      data: {
-        object: {
-          id: 'in_test',
-          object: 'invoice',
-          customer: 'cus_test123',
+          id: 'cs_test',
+          object: 'checkout.session',
+          payment_status: 'unpaid',
+          status: 'complete',
           customer_email: 'test@example.com',
-        } as Stripe.Invoice,
+        } as Stripe.Checkout.Session,
       },
     };
 
-    expect(mockEvent.type).toBe('invoice.payment_failed');
-    expect(mockEvent.data.object.customer_email).toBe('test@example.com');
+    const log = createLogger();
+    const req = { log } as any;
+
+    await handleCheckoutSessionCompleted(event, req, logContext);
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
-

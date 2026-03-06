@@ -21,14 +21,13 @@ import { RateLimiterRedis, RateLimiterMemory } from 'rate-limiter-flexible';
 import { getDb, runMigrations, seedTenantAndApiKey } from './lib/db';
 import { hashKey } from './lib/auth';
 import { incrementAndGateUsage } from './lib/usage';
-import { isProduction } from './config/env';
+import { isProduction, validateStripeAndOnboardingEnv } from './config/env';
 import { validateEnv } from '@sinna/types';
 import { AuthenticatedRequest, TenantState } from './types';
 import { registerWebhookRoutes } from './routes/webhooks';
 import { registerBillingRoutes } from './routes/billing';
 import { registerJobRoutes } from './routes/jobs';
 import { registerSubscriptionRoutes } from './routes/subscription';
-import { registerSyncRoutes } from './routes/sync';
 import { requestIdHook } from './middleware/requestId';
 import { sendErrorResponse } from './lib/errors';
 import { regionLanguageMiddleware } from './middleware/regionLanguage';
@@ -64,6 +63,15 @@ try {
     app.log.error({ message: errorMessage }, 'Invalid environment configuration');
     process.exit(1);
   }
+}
+
+// Stripe + onboarding env validation (required for dual-mode safety)
+try {
+  validateStripeAndOnboardingEnv(app.log);
+} catch (e: unknown) {
+  const err = e instanceof Error ? e : new Error(String(e));
+  app.log.error({ message: err.message }, 'Stripe/onboarding environment validation failed');
+  process.exit(1);
 }
 
 // Ensure rawBody is available for routes like Stripe webhooks (signature verification)
@@ -161,43 +169,46 @@ app.addHook('preHandler', async (req, reply) => {
     req.url.startsWith('/api-docs') ||
     req.url.startsWith('/billing/success') ||
     req.url.startsWith('/billing/cancel') ||
-    req.url.startsWith('/webhooks/stripe') ||
-    req.url.startsWith('/v1/sync/tenant')
+    req.url.startsWith('/webhooks/stripe')
   ) {
     return;
   }
   const key = req.headers['x-api-key'];
   if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
+  // Production keys must be sk_live_... (Render enforces billing in production only).
+  if (process.env.NODE_ENV === 'production' && !key.startsWith('sk_live_')) {
+    return reply.code(401).send({ code: 'unauthorized' });
+  }
   const h = hashKey(key);
   
   try {
     const { getDb, withRetry } = await import('./lib/db');
-    const { pool } = getDb();
+  const { pool } = getDb();
     const { rows } = await withRetry(async () => {
       return await pool.query(
-        'select t.id as tenant_id, t.active, t.status, t.grace_until, t.expires_at from api_keys k join tenants t on t.id=k.tenant_id where k.key_hash=$1',
-        [h]
-      );
+    'select t.id as tenant_id, t.active, t.status, t.grace_until, t.expires_at from api_keys k join tenants t on t.id=k.tenant_id where k.key_hash=$1',
+    [h]
+  );
     }, 2, 50);
-    const row = rows[0];
-    if (!row) return reply.code(401).send({ code: 'unauthorized' });
-    
-    const now = new Date();
-    const inGrace = row.grace_until && now < new Date(row.grace_until);
-    const isExpired = row.expires_at && now >= new Date(row.expires_at);
-    const isActive = row.status === 'active' && row.active && !isExpired;
-    
-    // Check subscription expiration first
-    if (isExpired && !inGrace) {
-      return reply.code(401).send({ code: 'subscription_expired', error: 'Your subscription has expired. Please renew to continue using the API.' });
-    }
-    
-    // Check status and active flag
-    if (!isActive && !inGrace) {
-      return reply.code(402).send({ code: 'payment_required', error: 'Your subscription is not active. Please update your payment method.' });
-    }
-    
-    (req as AuthenticatedRequest).tenantId = row.tenant_id as string;
+  const row = rows[0];
+  if (!row) return reply.code(401).send({ code: 'unauthorized' });
+  
+  const now = new Date();
+  const inGrace = row.grace_until && now < new Date(row.grace_until);
+  const isExpired = row.expires_at && now >= new Date(row.expires_at);
+  const isActive = row.status === 'active' && row.active && !isExpired;
+  
+  // Check subscription expiration first
+  if (isExpired && !inGrace) {
+    return reply.code(401).send({ code: 'subscription_expired', error: 'Your subscription has expired. Please renew to continue using the API.' });
+  }
+  
+  // Check status and active flag
+  if (!isActive && !inGrace) {
+    return reply.code(402).send({ code: 'payment_required', error: 'Your subscription is not active. Please update your payment method.' });
+  }
+  
+  (req as AuthenticatedRequest).tenantId = row.tenant_id as string;
   } catch (dbError: any) {
     // Handle database connection errors gracefully
     if (dbError?.message?.includes('Connection is closed') || 
@@ -561,7 +572,6 @@ function registerRoutes(): void {
   registerBillingRoutes(app, stripe);
   registerWebhookRoutes(app, stripe, tenants);
   registerSubscriptionRoutes(app);
-  registerSyncRoutes(app); // Replit Developer Portal sync endpoint
   // Note: redis will be set in start() function, routes will use it when called
   }
 

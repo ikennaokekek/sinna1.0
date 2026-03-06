@@ -1,11 +1,22 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import Stripe from 'stripe';
-import { getDb, seedTenantAndApiKey, withRetry } from '../lib/db';
+import { getDb, withRetry } from '../lib/db';
 import { sendEmailNotice } from '../lib/email';
-import { sendErrorResponse, ErrorCodes } from '../lib/errors';
 import { AuthenticatedRequest, TenantState } from '../types';
 import { performanceMonitor } from '../lib/logger';
-import { redisConnection } from '../lib/redis';
+import { callReplitInternalOnboard, type InternalOnboardPayload } from '../lib/internalOnboard';
+import { getStripeMode } from '../config/env';
+
+/**
+ * PRODUCTION-READY STRIPE WEBHOOK HANDLER
+ * 
+ * Key guarantees:
+ * 1. Always returns 200 immediately (before processing)
+ * 2. No unhandled errors can trigger 503
+ * 3. Idempotent event processing (tracks processed events)
+ * 4. Resilient to cold starts and retries
+ * 5. Comprehensive error logging without crashing
+ */
 
 export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | null, tenants: Map<string, TenantState>): void {
   app.post('/webhooks/stripe', {
@@ -13,7 +24,7 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
     schema: {
       description: 'Stripe webhook endpoint for subscription events',
       tags: ['Webhooks'],
-      hide: true, // Webhook endpoint, hide from public docs
+      hide: true,
       headers: {
         type: 'object',
         required: ['stripe-signature'],
@@ -34,14 +45,7 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
         400: {
           type: 'object',
           properties: {
-            success: { type: 'boolean' },
-            error: { type: 'string' }
-          }
-        },
-        503: {
-          type: 'object',
-          properties: {
-            success: { type: 'boolean' },
+            received: { type: 'boolean' },
             error: { type: 'string' }
           }
         }
@@ -49,287 +53,329 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
     }
   }, async (req: FastifyRequest, res: FastifyReply) => {
     const perfId = performanceMonitor.start('stripe_webhook', (req as AuthenticatedRequest).requestId);
+    const requestId = (req as AuthenticatedRequest).requestId || 'unknown';
     
+    // Structured logging helper
+    const logContext = {
+      requestId,
+      timestamp: new Date().toISOString(),
+    };
+
     try {
+      // STEP 1: Verify signature and parse event (must succeed before returning 200)
       const sig = req.headers['stripe-signature'] as string;
       const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
-      
       const isTesting = process.env.STRIPE_TESTING === 'true' || process.env.NODE_ENV === 'development';
-      
+
+      // Validate configuration (but don't return 503 - return 200 and log error)
       if (!stripe || !webhookSecret) {
         if (isTesting) {
-          req.log.warn('Testing mode: Processing webhook without Stripe signature verification');
+          req.log.warn({ ...logContext }, 'Testing mode: Processing webhook without Stripe signature verification');
         } else {
-          return res.code(503).send({ success: false, error: ErrorCodes.STRIPE_UNCONFIGURED });
+          req.log.error({ ...logContext }, 'Stripe webhook misconfigured: missing stripe client or webhook secret');
+          // Return 200 to prevent Stripe retries, but log the error
+          performanceMonitor.end(perfId);
+          return res.code(200).send({ received: false, error: 'misconfigured' });
         }
       }
-      
+
+      // Validate raw body exists
       const rawBody = (req as AuthenticatedRequest).rawBody;
       if (!rawBody) {
-        return res.code(400).send({ success: false, error: 'missing_body' });
+        req.log.error({ ...logContext }, 'Missing raw body in webhook request');
+        performanceMonitor.end(perfId);
+        return res.code(400).send({ received: false, error: 'missing_body' });
       }
-      
+
+      // Parse and verify event
       let event: Stripe.Event;
-      
-      if (isTesting) {
-        try {
+      try {
+        if (isTesting) {
           event = JSON.parse(rawBody.toString()) as Stripe.Event;
-          req.log.info('Testing mode: Using raw webhook payload as event');
-        } catch (err) {
-          req.log.error({ err }, 'Failed to parse webhook payload in testing mode');
-          return res.code(400).send({ success: false, error: 'Invalid payload' });
-        }
-      } else {
-        try {
-          event = stripe!.webhooks.constructEvent(rawBody, sig, webhookSecret);
-        } catch (err) {
-          req.log.error({ err }, 'Stripe signature verification failed');
-          return res.code(400).send({ success: false, error: 'Invalid signature' });
-        }
-      }
-
-      // Handle invoice.payment_succeeded
-      if (event.type === 'invoice.payment_succeeded') {
-        await handleInvoicePaymentSucceeded(event, req, tenants);
-      }
-
-      // Handle checkout.session.completed
-      // NOTE: This event is now primarily handled by Replit Developer Portal.
-      // Replit creates the customer, generates API key, sends email, then syncs to Render via /v1/sync/tenant
-      // This handler is kept for backward compatibility but should be deprioritized.
-      // In production with Replit, this webhook may not be received by Render.
-      if (event.type === 'checkout.session.completed') {
-        req.log.info({ 
-          eventId: event.id, 
-          eventType: event.type,
-          note: 'checkout.session.completed is now handled by Replit Developer Portal. This handler is for backward compatibility only.'
-        }, 'Received checkout.session.completed webhook (deprioritized - handled by Replit)');
-        
-        // Only process if explicitly enabled via environment variable
-        // This allows gradual migration and fallback if needed
-        if (process.env.ENABLE_RENDER_CHECKOUT_HANDLER === 'true') {
-          req.log.info('Processing checkout.session.completed (ENABLE_RENDER_CHECKOUT_HANDLER=true)');
-          await handleCheckoutSessionCompleted(event, req, tenants);
+          const stripeMode = getStripeMode();
+          req.log.info({ ...logContext, eventId: event.id, eventType: event.type, stripeMode }, `Testing mode: Parsed webhook payload (${stripeMode.toUpperCase()} mode)`);
         } else {
-          req.log.info('Skipping checkout.session.completed handler (handled by Replit Developer Portal)');
+          if (!sig) {
+            req.log.error({ ...logContext }, 'Missing stripe-signature header');
+            performanceMonitor.end(perfId);
+            return res.code(400).send({ received: false, error: 'missing_signature' });
+          }
+          event = stripe!.webhooks.constructEvent(rawBody, sig, webhookSecret);
+          const stripeMode = getStripeMode();
+          req.log.info({ ...logContext, eventId: event.id, eventType: event.type, stripeMode }, `Stripe webhook signature verified (${stripeMode.toUpperCase()} mode)`);
         }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        req.log.error({ ...logContext, error: errorMessage }, 'Stripe signature verification or parsing failed');
+        performanceMonitor.end(perfId);
+        // Return 400 for invalid signature (Stripe won't retry these)
+        return res.code(400).send({ received: false, error: 'invalid_signature' });
       }
 
-      // Handle invoice.payment_failed
-      if (event.type === 'invoice.payment_failed') {
-        await handleInvoicePaymentFailed(event, req, tenants);
+      // STEP 2: Idempotency — insert with onboarding_status = 'pending'; if event_id already exists, return 200
+      const eventId = event.id;
+      const eventType = event.type;
+      req.log.info(
+        { eventId, eventType },
+        'DEBUG: Webhook event received before idempotency check'
+      );
+      const inserted = await insertWebhookEventIfNew(eventId, eventType);
+      if (!inserted) {
+        req.log.info({ ...logContext, eventId, eventType }, 'Event already processed, skipping (idempotency)');
+        performanceMonitor.end(perfId);
+        return res.code(200).send({ received: true });
       }
 
-      // Handle customer.subscription.deleted
-      if (event.type === 'customer.subscription.deleted') {
-        await handleSubscriptionDeleted(event, req, tenants);
-      }
-
-      // Handle customer.subscription.updated
-      if (event.type === 'customer.subscription.updated') {
-        await handleSubscriptionUpdated(event, req, tenants);
-      }
-
+      // STEP 3: Return 200 IMMEDIATELY (before processing)
+      // This prevents Stripe from retrying while we process the event
+      res.code(200).send({ received: true });
       performanceMonitor.end(perfId);
-      return res.send({ received: true });
+
+      // STEP 4: Process event asynchronously (after response sent)
+      // Wrap in try/catch to ensure no unhandled errors
+      processEventAsync(event, req, tenants, logContext).catch((error) => {
+        // This catch should never be reached if processEventAsync handles all errors
+        // But we add it as a safety net
+        req.log.error(
+          { ...logContext, eventId, eventType, error: error instanceof Error ? error.message : String(error) },
+          'CRITICAL: Unhandled error in async event processing (should never happen)'
+        );
+      });
+
     } catch (error) {
+      // Final safety net - catch any errors before response is sent
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      req.log.error({ ...logContext, error: errorMessage }, 'Unexpected error in webhook handler');
       performanceMonitor.end(perfId);
-      req.log.error({ error }, 'Webhook processing error');
-      return sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
+      
+      // Always return 200 to prevent Stripe retries
+      // Even if we can't process, we don't want infinite retries
+      return res.code(200).send({ received: false, error: 'processing_failed' });
     }
   });
 }
 
+/**
+ * Insert webhook event with onboarding_status = 'pending' if not already present.
+ * Returns true if we inserted (first time), false if event_id already exists (duplicate).
+ */
+async function insertWebhookEventIfNew(eventId: string, eventType: string): Promise<boolean> {
+  try {
+    const { pool } = getDb();
+    const result = await pool.query(
+      `INSERT INTO webhook_events (event_id, event_type, processing_status, onboarding_status, processed_at, error_message, error)
+       VALUES ($1, $2, 'pending', 'pending', NOW(), NULL, NULL)
+       ON CONFLICT (event_id) DO NOTHING
+       RETURNING event_id`,
+      [eventId, eventType]
+    );
+    return result.rowCount !== null && result.rowCount > 0;
+  } catch (error) {
+    console.error('[Webhook] Failed to insert webhook event:', error);
+    return false;
+  }
+}
+
+/**
+ * Mark an event as processed; optionally set onboarding_status (for checkout.session.completed).
+ */
+async function markEventProcessed(
+  eventId: string,
+  eventType: string,
+  status: 'completed' | 'failed',
+  errorMessage?: string,
+  metadata?: Record<string, unknown>,
+  onboardingStatus?: 'completed' | 'failed'
+): Promise<void> {
+  try {
+    const { pool } = getDb();
+    if (onboardingStatus !== undefined) {
+      await pool.query(
+        `UPDATE webhook_events SET processing_status = $1, onboarding_status = $2, processed_at = NOW(), error_message = $3, error = $3, metadata = $4 WHERE event_id = $5`,
+        [status, onboardingStatus, errorMessage || null, metadata ? JSON.stringify(metadata) : null, eventId]
+      );
+    } else {
+      await pool.query(
+        `UPDATE webhook_events SET processing_status = $1, processed_at = NOW(), error_message = $2, error = $2, metadata = $3 WHERE event_id = $4`,
+        [status, errorMessage || null, metadata ? JSON.stringify(metadata) : null, eventId]
+      );
+    }
+  } catch (error) {
+    console.error('[Webhook] Failed to mark event as processed:', error);
+  }
+}
+
+/**
+ * Append a row to onboarding_logs (observability; never silent failure).
+ */
+async function insertOnboardingLog(
+  stripeEventId: string,
+  step: string,
+  status: string,
+  error?: string
+): Promise<void> {
+  try {
+    const { pool } = getDb();
+    await pool.query(
+      `INSERT INTO onboarding_logs (stripe_event_id, step, status, error) VALUES ($1, $2, $3, $4)`,
+      [stripeEventId, step, status, error ?? null]
+    );
+  } catch (err) {
+    console.error('[Webhook] Failed to insert onboarding_log:', err);
+  }
+}
+
+/**
+ * Process event asynchronously after 200 response has been sent
+ * All errors are caught and logged, never thrown
+ */
+async function processEventAsync(
+  event: Stripe.Event,
+  req: FastifyRequest,
+  tenants: Map<string, TenantState>,
+  logContext: Record<string, unknown>
+): Promise<void> {
+  const eventId = event.id;
+  const eventType = event.type;
+  req.log.info(
+    { eventId, eventType },
+    'DEBUG: Entered processEventAsync'
+  );
+  const startTime = Date.now();
+
+  req.log.info(
+    { ...logContext, eventId, eventType },
+    'Processing webhook event asynchronously'
+  );
+
+  try {
+    // Route to appropriate handler based on event type.
+    // checkout.session.completed is always processed by Render → callReplitInternalOnboard (no skip).
+    req.log.info(
+      { eventId, eventType },
+      'DEBUG: About to enter eventType switch'
+    );
+    switch (eventType) {
+      case 'invoice.payment_succeeded':
+        await handleInvoicePaymentSucceeded(event, req, tenants);
+        break;
+
+      case 'checkout.session.completed':
+        req.log.info({ ...logContext, eventId, eventType }, 'Processing checkout.session.completed (Render → onboarding service)');
+        await handleCheckoutSessionCompleted(event, req, logContext);
+        return; // onboarding_status updated inside handler; do not run generic markEventProcessed
+
+      case 'invoice.payment_failed':
+        await handleInvoicePaymentFailed(event, req, tenants);
+        break;
+
+      case 'customer.subscription.deleted':
+        await handleSubscriptionDeleted(event, req, tenants);
+        break;
+
+      case 'customer.subscription.updated':
+        await handleSubscriptionUpdated(event, req, tenants);
+        break;
+
+      default:
+        req.log.info({ ...logContext, eventId, eventType }, 'Unhandled event type (ignoring)');
+        // Mark as completed even if unhandled (we received it successfully)
+        await markEventProcessed(eventId, eventType, 'completed', undefined, { reason: 'unhandled_type' });
+        return;
+    }
+
+    // Mark event as successfully processed (for non-checkout, no onboarding_status update)
+    const processingTime = Date.now() - startTime;
+    await markEventProcessed(eventId, eventType, 'completed', undefined, { processingTimeMs: processingTime });
+
+    req.log.info(
+      { ...logContext, eventId, eventType, processingTimeMs: processingTime },
+      'Webhook event processed successfully'
+    );
+
+  } catch (error) {
+    // Catch ALL errors - never let them propagate
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    const processingTime = Date.now() - startTime;
+
+    req.log.error(
+      {
+        ...logContext,
+        eventId,
+        eventType,
+        error: errorMessage,
+        stack: errorStack,
+        processingTimeMs: processingTime,
+      },
+      'Error processing webhook event (logged, not retried)'
+    );
+
+    // Mark event as failed (but don't throw)
+    await markEventProcessed(eventId, eventType, 'failed', errorMessage, {
+      processingTimeMs: processingTime,
+      error: errorMessage,
+    });
+
+    // Don't throw - error is logged, event is marked as failed
+    // Stripe won't retry because we already returned 200
+  }
+}
+
+function getEmailDomain(email: string): string | undefined {
+  const at = email.lastIndexOf('@');
+  if (at <= 0 || at === email.length - 1) return undefined;
+  return email.slice(at + 1).toLowerCase();
+}
+
+/**
+ * Handler for invoice.payment_succeeded
+ * Wrapped in try/catch to prevent errors from propagating
+ */
 async function handleInvoicePaymentSucceeded(
   event: Stripe.Event,
   req: FastifyRequest,
   tenants: Map<string, TenantState>
 ): Promise<void> {
-  const invoice = event.data.object as Stripe.Invoice;
-  const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id || '';
-  
-  if (!stripeCustomerId) {
-    req.log.warn('No customer ID in invoice.payment_succeeded event');
-    return;
-  }
-
-  const { pool } = getDb();
-  const { rows } = await withRetry(async () => {
-    return await pool.query(
-      'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-      [stripeCustomerId]
-    );
-  }, 2, 100);
-  
-  if (rows.length === 0) {
-    req.log.warn({ stripeCustomerId }, 'Tenant not found for Stripe customer in invoice.payment_succeeded');
-    return;
-  }
-  
-  const tenantId = rows[0].id as string;
-  
-  // Update subscription expiration to 30 days from now (renewal)
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 30);
-  
-  // Update tenant status and expiration with retry
-  await withRetry(async () => {
-    await pool.query(
-      'UPDATE tenants SET status = $1, active = $2, expires_at = $3, grace_until = NULL WHERE id = $4',
-      ['active', true, expiresAt, tenantId]
-    );
-  }, 2, 100);
-  
-  // Optional: Rotate API key on renewal (uncomment to enable)
-  // const { createApiKey } = await import('../utils/keys');
-  // const { apiKey: newKey, hashed: newHash } = createApiKey();
-  // await pool.query(
-  //   'INSERT INTO api_keys (key_hash, tenant_id) VALUES ($1, $2)',
-  //   [newHash, tenantId]
-  // );
-  // const { sendApiKeyEmail } = await import('../utils/email');
-  // const tenantEmail = (await pool.query('SELECT name FROM tenants WHERE id = $1', [tenantId])).rows[0]?.name;
-  // if (tenantEmail) {
-  //   await sendApiKeyEmail(tenantEmail, newKey, { note: 'Your API key has been rotated due to subscription renewal.' });
-  // }
-  
-  const state = tenants.get(tenantId) || {
-    active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  
-  state.active = true;
-  state.graceUntil = undefined;
-  state.usage.requests = 0;
-  state.usage.minutes = 0;
-  state.usage.jobs = 0;
-  state.usage.storage = 0;
-  tenants.set(tenantId, state);
-  
-  req.log.info({ tenantId, stripeCustomerId, expiresAt }, 'Invoice payment succeeded, tenant activated and expiration updated');
-}
-
-async function handleCheckoutSessionCompleted(
-  event: Stripe.Event,
-  req: FastifyRequest,
-  tenants: Map<string, TenantState>
-): Promise<void> {
-  const session = event.data.object as Stripe.Checkout.Session;
-  const email = session.customer_details?.email;
-  
-  if (!email) {
-    req.log.warn('No email in checkout.session.completed event');
-    return;
-  }
-
   try {
-    const { createApiKey } = await import('../utils/keys');
-    const { apiKey, hashed } = createApiKey();
-
-    // Create tenant and API key in a transaction
-    let tenantId: string;
-    try {
-      const result = await seedTenantAndApiKey({
-        tenantName: email,
-        plan: 'standard',
-        apiKeyHash: hashed,
-      });
-      tenantId = result.tenantId;
-      
-      // Validate tenant was created successfully
-      if (!tenantId) {
-        throw new Error('Failed to create tenant: tenantId is null or undefined');
-      }
-      
-      // Verify tenant exists in database before proceeding
-      const { pool } = getDb();
-      const tenantCheck = await pool.query(
-        'SELECT id FROM tenants WHERE id = $1',
-        [tenantId]
-      );
-      
-      if (tenantCheck.rows.length === 0) {
-        throw new Error(`Invalid tenant_id: ${tenantId} - tenant not found in database`);
-      }
-      
-      req.log.info({ email, tenantId }, 'Tenant and API key created successfully');
-    } catch (dbError: any) {
-      // Check for foreign key violation
-      if (dbError?.code === '23503' || dbError?.message?.includes('foreign key')) {
-        req.log.error({ 
-          error: dbError, 
-          email, 
-          message: 'Foreign key violation - tenant_id is invalid' 
-        }, 'Database foreign key error when creating tenant/API key');
-        throw new Error(`Invalid tenant_id foreign key: ${dbError.message}`);
-      }
-      // Check for unique constraint violation (duplicate email)
-      if (dbError?.code === '23505' || dbError?.message?.includes('unique constraint')) {
-        req.log.warn({ email, error: dbError }, 'Tenant already exists, attempting to find existing tenant');
-        // Try to find existing tenant
-        const { pool } = getDb();
-        const existingTenant = await pool.query(
-          'SELECT id FROM tenants WHERE name = $1',
-          [email]
-        );
-        if (existingTenant.rows.length > 0) {
-          tenantId = existingTenant.rows[0].id;
-          // Create API key for existing tenant
-          await pool.query(
-            'INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING',
-            [hashed, tenantId]
-          );
-          req.log.info({ email, tenantId }, 'Using existing tenant, API key added');
-        } else {
-          throw new Error(`Failed to create or find tenant for email: ${email}`);
-        }
-      } else {
-        throw dbError;
-      }
+    const invoice = event.data.object as Stripe.Invoice;
+    const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id || '';
+    
+    if (!stripeCustomerId) {
+      req.log.warn({ eventId: event.id }, 'No customer ID in invoice.payment_succeeded event');
+      return;
     }
 
-    const stripeCustomerId = typeof session.customer === 'string' ? session.customer : session.customer?.id || '';
-    const stripeSubscriptionId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id || '';
+    const { pool } = getDb();
     
-    // Set subscription expiration to 30 days from now (standard billing cycle)
+    // Use retry for database operations
+    const { rows } = await withRetry(async () => {
+      return await pool.query(
+        'SELECT id FROM tenants WHERE stripe_customer_id = $1',
+        [stripeCustomerId]
+      );
+    }, 2, 100);
+    
+    if (rows.length === 0) {
+      req.log.warn({ eventId: event.id, stripeCustomerId }, 'Tenant not found for Stripe customer in invoice.payment_succeeded');
+      return;
+    }
+    
+    const tenantId = rows[0].id as string;
+    
+    // Update subscription expiration to 30 days from now (renewal)
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 30);
     
-    const { pool } = getDb();
-    
-    // Validate tenant_id again before updating
-    const tenantValidation = await pool.query(
-      'SELECT id FROM tenants WHERE id = $1',
-      [tenantId]
-    );
-    
-    if (tenantValidation.rows.length === 0) {
-      throw new Error(`Cannot update tenant: tenant_id ${tenantId} does not exist`);
-    }
-    
-    if (stripeCustomerId && stripeSubscriptionId) {
+    // Update tenant status and expiration with retry
+    await withRetry(async () => {
       await pool.query(
-        'UPDATE tenants SET stripe_customer_id = $1, stripe_subscription_id = $2, status = $3, active = $4, expires_at = $5 WHERE id = $6',
-        [stripeCustomerId, stripeSubscriptionId, 'active', true, expiresAt, tenantId]
-      );
-    } else if (stripeCustomerId) {
-      await pool.query(
-        'UPDATE tenants SET stripe_customer_id = $1, status = $2, active = $3, expires_at = $4 WHERE id = $5',
-        [stripeCustomerId, 'active', true, expiresAt, tenantId]
-      );
-    } else if (stripeSubscriptionId) {
-      await pool.query(
-        'UPDATE tenants SET stripe_subscription_id = $1, status = $2, active = $3, expires_at = $4 WHERE id = $5',
-        [stripeSubscriptionId, 'active', true, expiresAt, tenantId]
-      );
-    } else {
-      // No Stripe IDs yet, but still set status and expiration
-      await pool.query(
-        'UPDATE tenants SET status = $1, active = $2, expires_at = $3 WHERE id = $4',
+        'UPDATE tenants SET status = $1, active = $2, expires_at = $3, grace_until = NULL WHERE id = $4',
         ['active', true, expiresAt, tenantId]
       );
-    }
-
+    }, 2, 100);
+    
+    // Update in-memory cache
     const state = tenants.get(tenantId) || {
       active: false,
       usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
@@ -337,301 +383,439 @@ async function handleCheckoutSessionCompleted(
     
     state.active = true;
     state.graceUntil = undefined;
+    state.usage.requests = 0;
+    state.usage.minutes = 0;
+    state.usage.jobs = 0;
+    state.usage.storage = 0;
     tenants.set(tenantId, state);
+    
+    req.log.info({ eventId: event.id, tenantId, stripeCustomerId, expiresAt }, 'Invoice payment succeeded, tenant activated and expiration updated');
+  } catch (error) {
+    // Catch and log - don't throw
+    req.log.error(
+      { eventId: event.id, error: error instanceof Error ? error.message : String(error) },
+      'Error in handleInvoicePaymentSucceeded'
+    );
+    throw error; // Re-throw to be caught by processEventAsync
+  }
+}
 
-    req.log.info({ email, tenantId, apiKey }, 'New subscription created, API key generated');
-    
-    // Store API key in Redis for success page display (expires in 24 hours)
-    // Works for both test and live Stripe sessions
-    const sessionId = session.id;
-    if (sessionId) {
-      try {
-        await redisConnection.setex(`api_key:${sessionId}`, 86400, apiKey); // 24 hours = 86400 seconds
-        req.log.info({ sessionId }, 'API key stored in Redis for success page');
-      } catch (redisError) {
-        // Don't fail webhook if Redis storage fails - email will still be sent
-        req.log.warn({ 
-          sessionId, 
-          error: redisError instanceof Error ? redisError.message : String(redisError) 
-        }, 'Failed to store API key in Redis (will still send email)');
-      }
+/**
+ * Handler for checkout.session.completed
+ * Calls Replit POST /internal/onboard (HMAC-secured); updates onboarding_status and onboarding_logs.
+ */
+export async function handleCheckoutSessionCompleted(
+  event: Stripe.Event,
+  req: FastifyRequest,
+  logContext: Record<string, unknown>
+): Promise<void> {
+  const eventId = event.id;
+  try {
+    const session = event.data.object as Stripe.Checkout.Session;
+    req.log.info(
+      { ...logContext, eventId, stripeSessionId: session.id },
+      'Processing checkout.session.completed'
+    );
+
+    const isPaid = session.payment_status === 'paid';
+    const isComplete = session.status === 'complete';
+    if (!isPaid || !isComplete) {
+      req.log.info(
+        { ...logContext, eventId, stripeSessionId: session.id, payment_status: session.payment_status, status: session.status },
+        'Payment not verified; skipping onboarding'
+      );
+      await markEventProcessed(eventId, 'checkout.session.completed', 'completed', undefined, undefined, 'completed');
+      return;
     }
-    
-    // Send email with API key
-    try {
-      const { sendApiKeyEmail } = await import('../utils/email');
-      await sendApiKeyEmail(email, apiKey);
-      req.log.info({ email }, 'API key email sent successfully');
-    } catch (emailError) {
-      // Log the API key prominently if email fails so it can be retrieved from logs
-      req.log.error({ 
-        email, 
-        apiKey, 
-        error: emailError instanceof Error ? emailError.message : String(emailError) 
-      }, 'CRITICAL: Failed to send API key email - API key logged below');
-      req.log.warn({ apiKey, email }, 'API KEY FOR MANUAL RETRIEVAL (email failed)');
+
+    const email = session.customer_email || session.customer_details?.email;
+    if (!email) {
+      req.log.error({ ...logContext, eventId, stripeSessionId: session.id }, 'Payment verified but customer email is missing');
+      await markEventProcessed(eventId, 'checkout.session.completed', 'failed', 'Missing customer email', undefined, 'failed');
+      await insertOnboardingLog(eventId, 'validate', 'failed', 'Missing customer email');
+      return;
+    }
+
+    const stripeCustomerId = typeof session.customer === 'string' ? session.customer : session.customer?.id ?? '';
+    const sub = session.subscription;
+    const subscriptionId = typeof sub === 'string' ? sub : (sub as { id?: string } | null)?.id ?? '';
+
+    const baseUrl = process.env.ONBOARD_SERVICE_URL ?? '';
+    const secret = process.env.INTERNAL_SERVICE_SECRET ?? '';
+    if (!baseUrl || !secret) {
+      req.log.error({ ...logContext, eventId }, 'ONBOARD_SERVICE_URL and INTERNAL_SERVICE_SECRET required for onboarding');
+      await markEventProcessed(eventId, 'checkout.session.completed', 'failed', 'Missing onboarding config', undefined, 'failed');
+      await insertOnboardingLog(eventId, 'config', 'failed', 'Missing ONBOARD_SERVICE_URL or INTERNAL_SERVICE_SECRET');
+      return;
+    }
+
+    const payload: InternalOnboardPayload = {
+      eventId,
+      stripeSessionId: session.id,
+      stripeCustomerId,
+      subscriptionId,
+      email,
+      plan: 'standard',
+      timestamp: new Date().toISOString(),
+    };
+
+    req.log.info(
+      { ...logContext, eventId, stripeSessionId: session.id, emailDomain: getEmailDomain(email) },
+      'Calling onboarding service POST /internal/onboard'
+    );
+
+    const result = await callReplitInternalOnboard(
+      baseUrl.replace(/\/$/, ''),
+      secret,
+      payload,
+      {
+        onLog: (step, status, error) => insertOnboardingLog(eventId, step, status, error),
+      }
+    );
+
+    if (result.ok) {
+      req.log.info({ ...logContext, eventId, stripeSessionId: session.id }, 'Replit onboarding successful');
+      await markEventProcessed(eventId, 'checkout.session.completed', 'completed', undefined, undefined, 'completed');
+    } else {
+      req.log.error(
+        { ...logContext, eventId, stripeSessionId: session.id, error: result.error },
+        'Replit onboarding failed after retries'
+      );
+      await markEventProcessed(eventId, 'checkout.session.completed', 'failed', result.error ?? 'Unknown error', undefined, 'failed');
     }
   } catch (error) {
-    req.log.error({ 
-      error, 
-      email,
-      errorCode: (error as any)?.code,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    }, 'Failed to create tenant and API key for new subscription');
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    req.log.error({ ...logContext, eventId, error: errorMessage }, 'Error in handleCheckoutSessionCompleted');
+    await markEventProcessed(eventId, 'checkout.session.completed', 'failed', errorMessage, undefined, 'failed');
+    await insertOnboardingLog(eventId, 'handler_error', 'failed', errorMessage);
     throw error;
   }
 }
 
+/**
+ * Handler for invoice.payment_failed
+ * Wrapped in try/catch to prevent errors from propagating
+ */
 async function handleInvoicePaymentFailed(
   event: Stripe.Event,
   req: FastifyRequest,
   tenants: Map<string, TenantState>
 ): Promise<void> {
-  const invoice = event.data.object as Stripe.Invoice;
-  const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id || '';
-  const stripeSubscriptionId = invoice.subscription as string | undefined;
-  
-  if (!stripeCustomerId) {
-    req.log.warn('No customer ID in invoice.payment_failed event');
-    return;
-  }
+  try {
+    const invoice = event.data.object as Stripe.Invoice;
+    const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id || '';
+    const stripeSubscriptionId = invoice.subscription as string | undefined;
+    
+    if (!stripeCustomerId) {
+      req.log.warn({ eventId: event.id }, 'No customer ID in invoice.payment_failed event');
+      return;
+    }
 
-  const { pool } = getDb();
-  const { rows } = await pool.query(
-    'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-    [stripeCustomerId]
-  );
-  
-  if (rows.length === 0) {
-    req.log.warn({ stripeCustomerId }, 'Tenant not found for Stripe customer in invoice.payment_failed');
-    return;
-  }
-  
-  const tenantId = rows[0].id as string;
-  
-  // Update subscription ID if provided
-  if (stripeSubscriptionId) {
-    await pool.query(
-      'UPDATE tenants SET stripe_subscription_id = $1 WHERE id = $2',
-      [stripeSubscriptionId, tenantId]
+    const { pool } = getDb();
+    
+    // Use retry for database operations
+    const { rows } = await withRetry(async () => {
+      return await pool.query(
+        'SELECT id FROM tenants WHERE stripe_customer_id = $1',
+        [stripeCustomerId]
+      );
+    }, 2, 100);
+    
+    if (rows.length === 0) {
+      req.log.warn({ eventId: event.id, stripeCustomerId }, 'Tenant not found for Stripe customer in invoice.payment_failed');
+      return;
+    }
+    
+    const tenantId = rows[0].id as string;
+    
+    // Update subscription ID if provided
+    if (stripeSubscriptionId) {
+      await withRetry(async () => {
+        await pool.query(
+          'UPDATE tenants SET stripe_subscription_id = $1 WHERE id = $2',
+          [stripeSubscriptionId, tenantId]
+        );
+      }, 2, 100);
+    }
+    
+    // Deactivate tenant and mark as inactive (grace period allows temporary access)
+    const graceDays = parseInt(process.env.GRACE_DAYS || '7', 10);
+    const graceUntil = new Date();
+    graceUntil.setDate(graceUntil.getDate() + graceDays);
+    
+    await withRetry(async () => {
+      await pool.query(
+        'UPDATE tenants SET active = false, status = $1, grace_until = $2 WHERE id = $3',
+        ['inactive', graceUntil, tenantId]
+      );
+    }, 2, 100);
+    
+    // Update in-memory cache
+    const state = tenants.get(tenantId) || {
+      active: false,
+      usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
+    } as TenantState;
+    
+    state.active = false;
+    state.graceUntil = graceUntil.getTime();
+    tenants.set(tenantId, state);
+    
+    req.log.warn({ eventId: event.id, tenantId, graceUntil }, 'Payment failed - entered grace period');
+    
+    // Send email notification (non-critical, don't fail if it fails)
+    const email = invoice.customer_email || process.env.NOTIFY_FALLBACK_EMAIL || '';
+    if (email) {
+      try {
+        await sendEmailNotice(
+          email,
+          'Sinna: Payment failed, grace period started',
+          `Your subscription payment failed. You have a ${graceDays}-day grace period.`
+        );
+      } catch (emailError) {
+        req.log.warn({ eventId: event.id, error: emailError instanceof Error ? emailError.message : String(emailError) }, 'Failed to send payment failed email (non-critical)');
+      }
+    }
+  } catch (error) {
+    // Catch and log - don't throw
+    req.log.error(
+      { eventId: event.id, error: error instanceof Error ? error.message : String(error) },
+      'Error in handleInvoicePaymentFailed'
     );
-  }
-  
-  // Deactivate tenant and mark as inactive (grace period allows temporary access)
-  const graceDays = parseInt(process.env.GRACE_DAYS || '7', 10);
-  const graceUntil = new Date();
-  graceUntil.setDate(graceUntil.getDate() + graceDays);
-  
-  await pool.query(
-    'UPDATE tenants SET active = false, status = $1, grace_until = $2 WHERE id = $3',
-    ['inactive', graceUntil, tenantId]
-  );
-  
-  const state = tenants.get(tenantId) || {
-    active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  
-  state.active = false;
-  state.graceUntil = graceUntil.getTime();
-  tenants.set(tenantId, state);
-  
-  req.log.warn({ tenantId, graceUntil }, 'Payment failed - entered grace period');
-  const email = invoice.customer_email || process.env.NOTIFY_FALLBACK_EMAIL || '';
-  if (email) {
-    await sendEmailNotice(
-      email,
-      'Sinna: Payment failed, grace period started',
-      `Your subscription payment failed. You have a ${graceDays}-day grace period.`
-    );
+    throw error; // Re-throw to be caught by processEventAsync
   }
 }
 
+/**
+ * Handler for customer.subscription.deleted
+ * Wrapped in try/catch to prevent errors from propagating
+ */
 async function handleSubscriptionDeleted(
   event: Stripe.Event,
   req: FastifyRequest,
   tenants: Map<string, TenantState>
 ): Promise<void> {
-  const subscription = event.data.object as Stripe.Subscription;
-  const stripeSubscriptionId = subscription.id;
-  const stripeCustomerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id || '';
-  
-  if (!stripeSubscriptionId) {
-    req.log.warn('No subscription ID in customer.subscription.deleted event');
-    return;
-  }
-
-  const { pool } = getDb();
-  
-  // Find tenant by subscription ID first, fallback to customer ID
-  let rows: Array<{ id: string }>;
-  if (stripeSubscriptionId) {
-    const result = await pool.query(
-      'SELECT id FROM tenants WHERE stripe_subscription_id = $1',
-      [stripeSubscriptionId]
-    );
-    rows = result.rows;
+  try {
+    const subscription = event.data.object as Stripe.Subscription;
+    const stripeSubscriptionId = subscription.id;
+    const stripeCustomerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id || '';
     
-    // Fallback to customer ID if not found by subscription ID
-    if (rows.length === 0 && stripeCustomerId) {
-      const fallbackResult = await pool.query(
-        'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-        [stripeCustomerId]
-      );
-      rows = fallbackResult.rows;
+    if (!stripeSubscriptionId) {
+      req.log.warn({ eventId: event.id }, 'No subscription ID in customer.subscription.deleted event');
+      return;
     }
-  } else if (stripeCustomerId) {
-    const result = await pool.query(
-      'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-      [stripeCustomerId]
+
+    const { pool } = getDb();
+    
+    // Find tenant by subscription ID first, fallback to customer ID
+    let rows: Array<{ id: string }>;
+    if (stripeSubscriptionId) {
+      const result = await withRetry(async () => {
+        return await pool.query(
+          'SELECT id FROM tenants WHERE stripe_subscription_id = $1',
+          [stripeSubscriptionId]
+        );
+      }, 2, 100);
+      rows = result.rows;
+      
+      // Fallback to customer ID if not found by subscription ID
+      if (rows.length === 0 && stripeCustomerId) {
+        const fallbackResult = await withRetry(async () => {
+          return await pool.query(
+            'SELECT id FROM tenants WHERE stripe_customer_id = $1',
+            [stripeCustomerId]
+          );
+        }, 2, 100);
+        rows = fallbackResult.rows;
+      }
+    } else if (stripeCustomerId) {
+      const result = await withRetry(async () => {
+        return await pool.query(
+          'SELECT id FROM tenants WHERE stripe_customer_id = $1',
+          [stripeCustomerId]
+        );
+      }, 2, 100);
+      rows = result.rows;
+    } else {
+      req.log.warn({ eventId: event.id }, 'No subscription or customer ID in customer.subscription.deleted event');
+      return;
+    }
+    
+    if (rows.length === 0) {
+      req.log.warn({ eventId: event.id, stripeSubscriptionId, stripeCustomerId }, 'Tenant not found for Stripe subscription in customer.subscription.deleted');
+      return;
+    }
+    
+    const tenantId = rows[0].id as string;
+    
+    // Deactivate tenant, mark as expired, and clear subscription ID
+    await withRetry(async () => {
+      await pool.query(
+        'UPDATE tenants SET active = false, status = $1, stripe_subscription_id = NULL WHERE id = $2',
+        ['expired', tenantId]
+      );
+    }, 2, 100);
+    
+    // Update in-memory cache
+    const state = tenants.get(tenantId) || {
+      active: false,
+      usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
+    } as TenantState;
+    
+    state.active = false;
+    state.graceUntil = undefined;
+    tenants.set(tenantId, state);
+    
+    req.log.warn({ eventId: event.id, tenantId, stripeSubscriptionId }, 'Subscription deleted - tenant deactivated and marked as expired');
+    
+    // Send notification email (non-critical)
+    const email = process.env.NOTIFY_FALLBACK_EMAIL || '';
+    if (email) {
+      try {
+        await sendEmailNotice(
+          email,
+          'Sinna: Subscription Cancelled',
+          `Subscription ${stripeSubscriptionId} has been cancelled. Tenant ${tenantId} deactivated.`
+        );
+      } catch (emailError) {
+        req.log.warn({ eventId: event.id, error: emailError instanceof Error ? emailError.message : String(emailError) }, 'Failed to send subscription deleted email (non-critical)');
+      }
+    }
+  } catch (error) {
+    // Catch and log - don't throw
+    req.log.error(
+      { eventId: event.id, error: error instanceof Error ? error.message : String(error) },
+      'Error in handleSubscriptionDeleted'
     );
-    rows = result.rows;
-  } else {
-    req.log.warn('No subscription or customer ID in customer.subscription.deleted event');
-    return;
-  }
-  
-  if (rows.length === 0) {
-    req.log.warn({ stripeSubscriptionId, stripeCustomerId }, 'Tenant not found for Stripe subscription in customer.subscription.deleted');
-    return;
-  }
-  
-  const tenantId = rows[0].id as string;
-  
-  // Deactivate tenant, mark as expired, and clear subscription ID
-  await pool.query(
-    'UPDATE tenants SET active = false, status = $1, stripe_subscription_id = NULL WHERE id = $2',
-    ['expired', tenantId]
-  );
-  
-  const state = tenants.get(tenantId) || {
-    active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  
-  state.active = false;
-  state.graceUntil = undefined;
-  tenants.set(tenantId, state);
-  
-  req.log.warn({ tenantId, stripeSubscriptionId }, 'Subscription deleted - tenant deactivated and marked as expired');
-  
-  // Send notification email - get email from customer if available
-  // Note: We may need to fetch customer details from Stripe if email is needed
-  // For now, use fallback email or skip if not critical
-  const email = process.env.NOTIFY_FALLBACK_EMAIL || '';
-  if (email) {
-    await sendEmailNotice(
-      email,
-      'Sinna: Subscription Cancelled',
-      `Subscription ${stripeSubscriptionId} has been cancelled. Tenant ${tenantId} deactivated.`
-    );
+    throw error; // Re-throw to be caught by processEventAsync
   }
 }
 
+/**
+ * Handler for customer.subscription.updated
+ * Wrapped in try/catch to prevent errors from propagating
+ */
 async function handleSubscriptionUpdated(
   event: Stripe.Event,
   req: FastifyRequest,
   tenants: Map<string, TenantState>
 ): Promise<void> {
-  const subscription = event.data.object as Stripe.Subscription;
-  const stripeSubscriptionId = subscription.id;
-  const stripeCustomerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id || '';
-  const status = subscription.status;
-  
-  if (!stripeSubscriptionId) {
-    req.log.warn('No subscription ID in customer.subscription.updated event');
-    return;
-  }
-
-  const { pool } = getDb();
-  
-  // Find tenant by subscription ID first, fallback to customer ID
-  let rows: Array<{ id: string }>;
-  if (stripeSubscriptionId) {
-    const result = await pool.query(
-      'SELECT id FROM tenants WHERE stripe_subscription_id = $1',
-      [stripeSubscriptionId]
-    );
-    rows = result.rows;
+  try {
+    const subscription = event.data.object as Stripe.Subscription;
+    const stripeSubscriptionId = subscription.id;
+    const stripeCustomerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer?.id || '';
+    const status = subscription.status;
     
-    // Fallback to customer ID if not found by subscription ID
-    if (rows.length === 0 && stripeCustomerId) {
-      const fallbackResult = await pool.query(
-        'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-        [stripeCustomerId]
-      );
-      rows = fallbackResult.rows;
-      
-      // Update subscription ID if found by customer ID
-      if (rows.length > 0) {
-        await pool.query(
-          'UPDATE tenants SET stripe_subscription_id = $1 WHERE id = $2',
-          [stripeSubscriptionId, rows[0].id]
-        );
-      }
+    if (!stripeSubscriptionId) {
+      req.log.warn({ eventId: event.id }, 'No subscription ID in customer.subscription.updated event');
+      return;
     }
-  } else if (stripeCustomerId) {
-    const result = await pool.query(
-      'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-      [stripeCustomerId]
+
+    const { pool } = getDb();
+    
+    // Find tenant by subscription ID first, fallback to customer ID
+    let rows: Array<{ id: string }>;
+    if (stripeSubscriptionId) {
+      const result = await withRetry(async () => {
+        return await pool.query(
+          'SELECT id FROM tenants WHERE stripe_subscription_id = $1',
+          [stripeSubscriptionId]
+        );
+      }, 2, 100);
+      rows = result.rows;
+      
+      // Fallback to customer ID if not found by subscription ID
+      if (rows.length === 0 && stripeCustomerId) {
+        const fallbackResult = await withRetry(async () => {
+          return await pool.query(
+            'SELECT id FROM tenants WHERE stripe_customer_id = $1',
+            [stripeCustomerId]
+          );
+        }, 2, 100);
+        rows = fallbackResult.rows;
+        
+        // Update subscription ID if found by customer ID
+        if (rows.length > 0) {
+          await withRetry(async () => {
+            await pool.query(
+              'UPDATE tenants SET stripe_subscription_id = $1 WHERE id = $2',
+              [stripeSubscriptionId, rows[0].id]
+            );
+          }, 2, 100);
+        }
+      }
+    } else if (stripeCustomerId) {
+      const result = await withRetry(async () => {
+        return await pool.query(
+          'SELECT id FROM tenants WHERE stripe_customer_id = $1',
+          [stripeCustomerId]
+        );
+      }, 2, 100);
+      rows = result.rows;
+    } else {
+      req.log.warn({ eventId: event.id }, 'No subscription or customer ID in customer.subscription.updated event');
+      return;
+    }
+    
+    if (rows.length === 0) {
+      req.log.warn({ eventId: event.id, stripeSubscriptionId, stripeCustomerId }, 'Tenant not found for Stripe subscription in customer.subscription.updated');
+      return;
+    }
+    
+    const tenantId = rows[0].id as string;
+    
+    // Update tenant status based on subscription status
+    const isActive = status === 'active' || status === 'trialing';
+    let tenantStatus: 'active' | 'inactive' | 'expired' = isActive ? 'active' : 'inactive';
+    let expiresAt: Date | null = null;
+    
+    // If subscription is active, extend expiration by 30 days
+    if (isActive) {
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 30);
+    } else if (status === 'canceled' || status === 'unpaid') {
+      tenantStatus = 'expired';
+    }
+    
+    if (expiresAt) {
+      await withRetry(async () => {
+        await pool.query(
+          'UPDATE tenants SET active = $1, status = $2, stripe_subscription_id = $3, expires_at = $4 WHERE id = $5',
+          [isActive, tenantStatus, stripeSubscriptionId, expiresAt, tenantId]
+        );
+      }, 2, 100);
+    } else {
+      await withRetry(async () => {
+        await pool.query(
+          'UPDATE tenants SET active = $1, status = $2, stripe_subscription_id = $3 WHERE id = $4',
+          [isActive, tenantStatus, stripeSubscriptionId, tenantId]
+        );
+      }, 2, 100);
+    }
+    
+    // Update in-memory cache
+    const state = tenants.get(tenantId) || {
+      active: false,
+      usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
+    } as TenantState;
+    
+    state.active = isActive;
+    if (!isActive) {
+      state.graceUntil = undefined;
+    }
+    tenants.set(tenantId, state);
+    
+    req.log.info({ eventId: event.id, tenantId, stripeSubscriptionId, status }, 'Subscription updated - tenant status changed');
+    
+    // Log warnings for status issues (non-critical)
+    if (status === 'past_due' || status === 'unpaid') {
+      req.log.warn({ eventId: event.id, tenantId, stripeSubscriptionId, status }, 'Subscription status issue - tenant may need attention');
+    }
+  } catch (error) {
+    // Catch and log - don't throw
+    req.log.error(
+      { eventId: event.id, error: error instanceof Error ? error.message : String(error) },
+      'Error in handleSubscriptionUpdated'
     );
-    rows = result.rows;
-  } else {
-    req.log.warn('No subscription or customer ID in customer.subscription.updated event');
-    return;
-  }
-  
-  if (rows.length === 0) {
-    req.log.warn({ stripeSubscriptionId, stripeCustomerId }, 'Tenant not found for Stripe subscription in customer.subscription.updated');
-    return;
-  }
-  
-  const tenantId = rows[0].id as string;
-  
-  // Update tenant status based on subscription status
-  const isActive = status === 'active' || status === 'trialing';
-  let tenantStatus: 'active' | 'inactive' | 'expired' = isActive ? 'active' : 'inactive';
-  let expiresAt: Date | null = null;
-  
-  // If subscription is active, extend expiration by 30 days
-  if (isActive) {
-    expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
-  } else if (status === 'canceled' || status === 'unpaid') {
-    tenantStatus = 'expired';
-  }
-  
-  if (expiresAt) {
-    await pool.query(
-      'UPDATE tenants SET active = $1, status = $2, stripe_subscription_id = $3, expires_at = $4 WHERE id = $5',
-      [isActive, tenantStatus, stripeSubscriptionId, expiresAt, tenantId]
-    );
-  } else {
-    await pool.query(
-      'UPDATE tenants SET active = $1, status = $2, stripe_subscription_id = $3 WHERE id = $4',
-      [isActive, tenantStatus, stripeSubscriptionId, tenantId]
-    );
-  }
-  
-  const state = tenants.get(tenantId) || {
-    active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  
-  state.active = isActive;
-  if (!isActive) {
-    state.graceUntil = undefined;
-  }
-  tenants.set(tenantId, state);
-  
-  req.log.info({ tenantId, stripeSubscriptionId, status }, 'Subscription updated - tenant status changed');
-  
-  // Send notification for status changes
-  // Note: To get customer email, we would need to fetch customer from Stripe
-  // For now, log the status change - email notifications can be handled via Stripe's built-in emails
-  if (status === 'past_due' || status === 'unpaid') {
-    req.log.warn({ tenantId, stripeSubscriptionId, status }, 'Subscription status issue - tenant may need attention');
-    // Stripe typically sends its own emails for payment issues, so we don't duplicate here
+    throw error; // Re-throw to be caught by processEventAsync
   }
 }
-

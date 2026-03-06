@@ -3,6 +3,7 @@
  * Stripe Integration Test
  * Tests: API key validity, checkout session creation, webhook endpoint
  */
+import 'dotenv/config';
 
 import Stripe from 'stripe';
 
