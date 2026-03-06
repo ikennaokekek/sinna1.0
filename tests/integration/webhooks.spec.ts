@@ -4,10 +4,8 @@ describe('Stripe Webhook Integration', () => {
   it('should process checkout.session.completed webhook', async () => {
     // Integration test would require:
     // - Test Stripe webhook payload
-    // - Mock database responses
-    // - Verify tenant creation
-    // - Verify API key generation
-    // - Verify email sending
+    // - Verify payment status checks
+    // - Verify Replit notification call (POST /internal/confirm-payment)
     
     // Placeholder for integration test
     expect(true).toBe(true);

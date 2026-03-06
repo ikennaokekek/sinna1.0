@@ -1,0 +1,24 @@
+{
+  "timestamp": "2025-12-23T11:07:26.288Z",
+  "apiBaseUrl": "https://sinna1-0.onrender.com",
+  "testVideoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+  "summary": {
+    "total": 2,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 1
+  },
+  "results": [
+    {
+      "test": "Health Check",
+      "status": "passed",
+      "message": "API is responding (401 unauthorized - expected)",
+      "duration": 399
+    },
+    {
+      "test": "Stripe Checkout",
+      "status": "skipped",
+      "message": "STRIPE_SECRET_KEY not provided"
+    }
+  ]
+}

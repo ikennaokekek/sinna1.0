@@ -210,88 +210,88 @@ export function registerJobRoutes(
       // Atomic job enqueueing: if any queue fails, rollback usage counter
       let jobBundle: JobBundle;
       try {
-        // enqueue pipeline: captions -> ad -> color
-        const captionJob = await queues.captions.add('generate-subtitles', {
-          videoUrl: body.source_url,
-          language: languageCode, // Use base language code (e.g., 'en', 'zh', 'fr')
-          languageFull: resolvedLanguage, // Store full language code (e.g., 'en-US', 'zh-CN') for reference
-          format: captionFormat,
-          formats: presetCfg.subtitleFormats,
-          captionStyle: presetCfg.captionStyle,
-          burnIn: !!presetCfg.burnIn,
-          tenantId,
-          userId: tenantId,
-        });
+      // enqueue pipeline: captions -> ad -> color
+      const captionJob = await queues.captions.add('generate-subtitles', {
+        videoUrl: body.source_url,
+        language: languageCode, // Use base language code (e.g., 'en', 'zh', 'fr')
+        languageFull: resolvedLanguage, // Store full language code (e.g., 'en-US', 'zh-CN') for reference
+        format: captionFormat,
+        formats: presetCfg.subtitleFormats,
+        captionStyle: presetCfg.captionStyle,
+        burnIn: !!presetCfg.burnIn,
+        tenantId,
+        userId: tenantId,
+      });
 
-        const adJob = await queues.ad.add('generate-audio-description', {
-          videoUrl: body.source_url,
-          language: languageCode, // Use base language code
-          languageFull: resolvedLanguage, // Store full language code for reference
-          enabled: !!presetCfg.adEnabled,
-          speed: presetCfg.speed || 1.0,
-          tenantId,
-          userId: tenantId,
-          dependsOn: captionJob.id,
-        });
+      const adJob = await queues.ad.add('generate-audio-description', {
+        videoUrl: body.source_url,
+        language: languageCode, // Use base language code
+        languageFull: resolvedLanguage, // Store full language code for reference
+        enabled: !!presetCfg.adEnabled,
+        speed: presetCfg.speed || 1.0,
+        tenantId,
+        userId: tenantId,
+        dependsOn: captionJob.id,
+      });
 
-        const colorJob = await queues.color.add('analyze-colors', {
-          videoUrl: body.source_url,
-          colorProfile: presetCfg.colorProfile,
-          motionReduce: !!presetCfg.motionReduce,
-          strobeReduce: !!presetCfg.strobeReduce,
-          tenantId,
-          userId: tenantId,
-          dependsOn: adJob.id,
-        });
+      const colorJob = await queues.color.add('analyze-colors', {
+        videoUrl: body.source_url,
+        colorProfile: presetCfg.colorProfile,
+        motionReduce: !!presetCfg.motionReduce,
+        strobeReduce: !!presetCfg.strobeReduce,
+        tenantId,
+        userId: tenantId,
+        dependsOn: adJob.id,
+      });
 
-        // Add video transformation job if preset requires it
-        let videoTransformJobId: string | undefined = undefined;
-        if (presetCfg.videoTransform && presetCfg.videoTransformConfig) {
-          const videoTransformJob = await queues.videoTransform.add('transform-video', {
-            videoUrl: body.source_url,
-            tenantId,
-            presetId: preset,
-            transformConfig: presetCfg.videoTransformConfig,
-            // Pass job IDs for accessing artifacts
-            adJobId: adJob.id,
-            captionJobId: captionJob.id,
-          }, {
-            // Note: BullMQ doesn't support dependsOn in JobsOptions, jobs run independently
-            // Dependencies are handled by checking job status in the worker
-          });
-          videoTransformJobId = videoTransformJob.id ? String(videoTransformJob.id) : undefined;
-        }
+      // Add video transformation job if preset requires it
+      let videoTransformJobId: string | undefined = undefined;
+      if (presetCfg.videoTransform && presetCfg.videoTransformConfig) {
+        const videoTransformJob = await queues.videoTransform.add('transform-video', {
+          videoUrl: body.source_url,
+          tenantId,
+          presetId: preset,
+          transformConfig: presetCfg.videoTransformConfig,
+          // Pass job IDs for accessing artifacts
+          adJobId: adJob.id,
+          captionJobId: captionJob.id,
+        }, {
+          // Note: BullMQ doesn't support dependsOn in JobsOptions, jobs run independently
+          // Dependencies are handled by checking job status in the worker
+        });
+        videoTransformJobId = videoTransformJob.id ? String(videoTransformJob.id) : undefined;
+      }
 
         jobBundle = {
-          id: String(captionJob.id!),
-          steps: {
-            captions: String(captionJob.id!),
-            ad: String(adJob.id!),
-            color: String(colorJob.id!),
-            ...(videoTransformJobId ? { videoTransform: videoTransformJobId } : {}),
-          },
-          preset,
-        };
-        
-        if (redis) {
-          await redis.setex(idemCacheKey, 24 * 3600, JSON.stringify(jobBundle));
-        }
+        id: String(captionJob.id!),
+        steps: {
+          captions: String(captionJob.id!),
+          ad: String(adJob.id!),
+          color: String(colorJob.id!),
+          ...(videoTransformJobId ? { videoTransform: videoTransformJobId } : {}),
+        },
+        preset,
+      };
+      
+      if (redis) {
+        await redis.setex(idemCacheKey, 24 * 3600, JSON.stringify(jobBundle));
+      }
 
         // Update usage counters in transaction with retry
         await withRetry(async () => {
           await withTransaction(async (client) => {
             await client.query(
-              `insert into usage_counters(tenant_id, period_start, minutes_used, jobs, egress_bytes)
-               values ($1, date_trunc('month', now())::date, 0, 0, 0)
-               on conflict (tenant_id) do nothing`,
-              [tenantId]
-            );
+          `insert into usage_counters(tenant_id, period_start, minutes_used, jobs, egress_bytes)
+           values ($1, date_trunc('month', now())::date, 0, 0, 0)
+           on conflict (tenant_id) do nothing`,
+          [tenantId]
+        );
             await client.query(
-              `update usage_counters
-               set jobs = jobs + 1
-               where tenant_id = $1`,
-              [tenantId]
-            );
+          `update usage_counters
+           set jobs = jobs + 1
+           where tenant_id = $1`,
+          [tenantId]
+        );
           });
         }, 3, 100);
       } catch (queueError) {

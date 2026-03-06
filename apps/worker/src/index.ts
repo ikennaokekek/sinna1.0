@@ -56,8 +56,8 @@ async function startWorkers() {
     // Import Pool dynamically to avoid circular dependencies
     const { Pool } = await import('pg');
     db = new Pool({
-      connectionString: databaseUrl,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined as any,
+        connectionString: databaseUrl,
+        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined as any,
       max: 5, // Worker needs fewer connections than API
       min: 1,
       idleTimeoutMillis: 30_000,
@@ -380,16 +380,16 @@ async function startWorkers() {
         
         // Retry DB operations with exponential backoff
         await retryDbOperation(async () => {
-          await db.query(
-            `insert into usage_counters(tenant_id, period_start, minutes_used, jobs, egress_bytes)
-             values ($1, date_trunc('month', now())::date, 0, 0, 0)
-             on conflict (tenant_id) do nothing`,
-            [tenantId]
-          );
-          await db.query(
-            `update usage_counters set minutes_used = minutes_used + $2, egress_bytes = egress_bytes + $3 where tenant_id = $1`,
-            [tenantId, minutes, egressBytes]
-          );
+        await db.query(
+          `insert into usage_counters(tenant_id, period_start, minutes_used, jobs, egress_bytes)
+           values ($1, date_trunc('month', now())::date, 0, 0, 0)
+           on conflict (tenant_id) do nothing`,
+          [tenantId]
+        );
+        await db.query(
+          `update usage_counters set minutes_used = minutes_used + $2, egress_bytes = egress_bytes + $3 where tenant_id = $1`,
+          [tenantId, minutes, egressBytes]
+        );
         }, 3, 100);
       } catch (e) {
         console.error('Failed to update usage on completion after retries', e);

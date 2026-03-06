@@ -1,0 +1,24 @@
+{
+  "timestamp": "2025-12-23T11:07:02.564Z",
+  "apiBaseUrl": "https://sinna.site",
+  "testVideoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+  "summary": {
+    "total": 2,
+    "passed": 0,
+    "failed": 1,
+    "skipped": 1
+  },
+  "results": [
+    {
+      "test": "Health Check",
+      "status": "failed",
+      "message": "Error: Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON",
+      "duration": 390
+    },
+    {
+      "test": "Stripe Checkout",
+      "status": "skipped",
+      "message": "STRIPE_SECRET_KEY not provided"
+    }
+  ]
+}

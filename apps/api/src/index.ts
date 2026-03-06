@@ -175,10 +175,6 @@ app.addHook('preHandler', async (req, reply) => {
   }
   const key = req.headers['x-api-key'];
   if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
-  // Production keys must be sk_live_... (Render enforces billing in production only).
-  if (process.env.NODE_ENV === 'production' && !key.startsWith('sk_live_')) {
-    return reply.code(401).send({ code: 'unauthorized' });
-  }
   const h = hashKey(key);
   
   try {

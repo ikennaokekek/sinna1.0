@@ -14,10 +14,13 @@
     "test:vitest": "vitest run",
     "test:heal": "vitest run tests/videoTransform.heal.ts",
     "verify:production": "tsx scripts/verify-production.ts",
+    "test:complete": "tsx scripts/test-complete-workflow.ts",
     "watchdog": "tsx scripts/watchdog.ts",
     "watchdog:dev": "tsx watch scripts/watchdog.ts",
     "test:api": "tsx scripts/test-api-endpoints.ts",
     "test:e2e": "E2E_BASE_URL=http://localhost:4000 npx playwright test",
+    "upstash:list": "tsx scripts/upstash-list-databases-workaround.ts",
+    "upstash:test": "tsx scripts/test-upstash-fix-integration.ts",
     "docker": "docker compose up -d",
     "gen:postman": "node scripts/generate-postman.js"
   },
@@ -59,7 +62,8 @@
     "nodemon": "^3.0.1",
     "playwright": "^1.56.0",
     "tsx": "^3.14.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^1.6.1"
   },
   "pnpm": {
     "overrides": {
