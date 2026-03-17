@@ -17,10 +17,10 @@ async function startWorkers() {
   const redisUrl = process.env.REDIS_URL;
   let connection: IORedis | null = null;
 
-  // Initialize Redis connection first
+  // Initialize Redis: lazyConnect true. If ioredis throws "already connecting/connected", wait for ready.
   if (redisUrl) {
     const client = new IORedis(redisUrl, {
-      lazyConnect: false,
+      lazyConnect: true,
       maxRetriesPerRequest: 3,
       enableReadyCheck: true,
       retryStrategy: (times: number) => {
@@ -29,14 +29,41 @@ async function startWorkers() {
       },
       connectTimeout: 5000,
     } as any);
-    
+
     try {
-      await client.connect();
-      console.log('Worker Redis connected');
-      connection = client;
+      const pong = await client.ping();
+      if (pong === 'PONG') {
+        console.log('Worker Redis connected');
+        connection = client;
+      } else {
+        console.warn('Worker Redis unavailable, running without queues (ping failed)');
+        connection = null;
+      }
     } catch (e: any) {
-      console.warn('Worker Redis unavailable, running without queues', e?.message || e);
-      connection = null;
+      const msg = e?.message || String(e);
+      if (/already connecting|already connected/i.test(msg)) {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('Redis ready timeout')), 15000);
+            client.once('ready', () => {
+              clearTimeout(t);
+              resolve();
+            });
+            client.once('error', (err: Error) => {
+              clearTimeout(t);
+              reject(err);
+            });
+          });
+          console.log('Worker Redis connected');
+          connection = client;
+        } catch (waitErr: any) {
+          console.warn('Worker Redis unavailable, running without queues', waitErr?.message || waitErr);
+          connection = null;
+        }
+      } else {
+        console.warn('Worker Redis unavailable, running without queues', msg);
+        connection = null;
+      }
     }
   } else {
     console.warn('REDIS_URL not set; worker will idle');
