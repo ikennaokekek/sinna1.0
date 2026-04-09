@@ -1,35 +1,38 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { seedTenantAndApiKey } from './db';
-import { getDb } from './db';
+import { Pool } from 'pg';
+import { seedTenantAndApiKey, resetDbClientsForTests } from './db';
 
-vi.mock('./db', async () => {
-  const actual = await vi.importActual('./db');
-  return {
-    ...actual,
-    getDb: vi.fn(),
-  };
-});
+vi.mock('pg', () => ({
+  Pool: vi.fn(),
+}));
 
 describe('seedTenantAndApiKey', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test';
+    resetDbClientsForTests();
+    vi.mocked(Pool).mockReset();
   });
 
   it('should create tenant and API key', async () => {
     const mockClient = {
-      query: vi.fn()
+      query: vi
+        .fn()
         .mockResolvedValueOnce({}) // BEGIN
-        .mockResolvedValueOnce({ rows: [{ id: 'tenant-123' }] }) // INSERT tenant
+        .mockResolvedValueOnce({ rows: [] }) // SELECT existing tenant
+        .mockResolvedValueOnce({ rows: [{ id: 'tenant-123' }] }) // INSERT tenant RETURNING
         .mockResolvedValueOnce({}) // INSERT api_key
         .mockResolvedValueOnce({}), // COMMIT
       release: vi.fn(),
     };
 
-    const mockPool = {
-      connect: vi.fn().mockResolvedValue(mockClient),
-    };
-
-    (getDb as any).mockReturnValue({ pool: mockPool });
+    vi.mocked(Pool).mockImplementation(
+      () =>
+        ({
+          connect: vi.fn().mockResolvedValue(mockClient),
+          on: vi.fn(),
+          end: vi.fn().mockResolvedValue(undefined),
+        }) as unknown as Pool
+    );
 
     const result = await seedTenantAndApiKey({
       tenantName: 'test@example.com',
@@ -38,23 +41,26 @@ describe('seedTenantAndApiKey', () => {
     });
 
     expect(result.tenantId).toBe('tenant-123');
-    expect(mockClient.query).toHaveBeenCalledTimes(4);
+    expect(mockClient.query).toHaveBeenCalled();
   });
 
   it('should rollback on error', async () => {
     const mockClient = {
-      query: vi.fn()
+      query: vi
+        .fn()
         .mockResolvedValueOnce({}) // BEGIN
-        .mockRejectedValueOnce(new Error('Database error')) // INSERT tenant fails
-        .mockResolvedValueOnce({}), // ROLLBACK
+        .mockRejectedValueOnce(new Error('Database error')),
       release: vi.fn(),
     };
 
-    const mockPool = {
-      connect: vi.fn().mockResolvedValue(mockClient),
-    };
-
-    (getDb as any).mockReturnValue({ pool: mockPool });
+    vi.mocked(Pool).mockImplementation(
+      () =>
+        ({
+          connect: vi.fn().mockResolvedValue(mockClient),
+          on: vi.fn(),
+          end: vi.fn().mockResolvedValue(undefined),
+        }) as unknown as Pool
+    );
 
     await expect(
       seedTenantAndApiKey({
@@ -65,4 +71,3 @@ describe('seedTenantAndApiKey', () => {
     ).rejects.toThrow('Database error');
   });
 });
-

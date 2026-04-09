@@ -5,11 +5,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // Mock dependencies
+vi.mock('@aws-sdk/s3-request-presigner', () => ({
+  getSignedUrl: vi
+    .fn()
+    .mockImplementation(async (_client: unknown, command: { input?: { Key?: string } }) => {
+      const key = command?.input?.Key ?? 'object';
+      return `https://r2.example/${key.split('/').map(encodeURIComponent).join('/')}?X-Amz-Expires=3600`;
+    }),
+}));
+
 vi.mock('@aws-sdk/client-s3', () => ({
   S3Client: vi.fn().mockImplementation(() => ({
     send: vi.fn().mockResolvedValue({}),
   })),
   PutObjectCommand: vi.fn().mockImplementation((params) => params),
+  GetObjectCommand: vi.fn().mockImplementation((input: { Bucket?: string; Key?: string }) => ({
+    input,
+  })),
 }));
 
 vi.mock('../apps/worker/src/lib/r2', () => ({
@@ -21,13 +33,11 @@ vi.mock('child_process', () => ({
 }));
 
 vi.mock('fs', async () => {
-  const actual = await vi.importActual('fs');
+  const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
     writeFileSync: vi.fn(),
-    readFileSync: vi.fn().mockReturnValue(Buffer.from('fake video content')),
     unlinkSync: vi.fn(),
-    existsSync: vi.fn().mockReturnValue(true),
   };
 });
 

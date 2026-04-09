@@ -100,16 +100,19 @@ export interface JobStatusResponse {
       status: 'pending' | 'processing' | 'completed' | 'failed';
       artifactKey?: string;
       url?: string;
+      degraded?: boolean;
     };
     ad?: {
       status: 'pending' | 'processing' | 'completed' | 'failed';
       artifactKey?: string;
       url?: string;
+      degraded?: boolean;
     };
     color?: {
       status: 'pending' | 'processing' | 'completed' | 'failed';
       artifactKey?: string;
       url?: string;
+      degraded?: boolean;
     };
     videoTransform?: {
       status: 'pending' | 'processing' | 'completed' | 'failed';

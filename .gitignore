@@ -121,3 +121,15 @@ Dockerfile*
 .cursor/*.MOV
 .cursor/*.mp4
 .cursor/*.MP4
+
+# Accidental nested clone of this repo (do not commit as submodule)
+/SINNA1.0/
+
+# Local Docker integration run logs (scripts/run-integration-local.sh)
+.sinna-it-api.log
+.sinna-it-worker.log
+
+# Detached local API (scripts/local-dev-persist.sh)
+.sinna-local-api.pid
+.sinna-local-api.log
+.qpanda/

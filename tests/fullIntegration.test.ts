@@ -40,7 +40,10 @@ const presets = [
   'cognitive_load',
 ];
 
-describe('Full End-to-End Diagnostic: Sinna 1.0 ↔ TestStream', () => {
+// Opt-in only: pnpm test:remote-diagnostic (sets RUN_REMOTE_DIAGNOSTIC=1 in vitest.remote-diagnostic.config.ts)
+describe.skipIf(process.env.RUN_REMOTE_DIAGNOSTIC !== '1')(
+  'Full End-to-End Diagnostic: Sinna 1.0 ↔ TestStream',
+  () => {
   beforeAll(async () => {
     console.log('🚀 Starting integration tests for TestStream...');
     console.log(`API URL: ${SINNA_API}`);
@@ -200,7 +203,9 @@ describe('Full End-to-End Diagnostic: Sinna 1.0 ↔ TestStream', () => {
       summary: 'Integration tests completed. Check individual test results above.',
     };
 
-    const reportPath = path.join(__dirname, 'reports', 'full_integration_report.md');
+    const reportDir = path.join(__dirname, 'reports');
+    fs.mkdirSync(reportDir, { recursive: true });
+    const reportPath = path.join(reportDir, 'full_integration_report.md');
     fs.writeFileSync(
       reportPath,
       `# Full Integration Test Report\n\n` +

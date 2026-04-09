@@ -46,6 +46,17 @@ export function getDb(): DatabaseClients {
   return cached;
 }
 
+/** Drop cached pool so the next `getDb()` creates a fresh one (Vitest only). */
+export function resetDbClientsForTests(): void {
+  if (process.env.VITEST !== 'true') return;
+  try {
+    void cached?.pool.end();
+  } catch {
+    // ignore
+  }
+  cached = null;
+}
+
 /**
  * Execute a function with a database connection, ensuring proper release
  * @param fn Function to execute with the connection

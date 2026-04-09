@@ -15,11 +15,22 @@ describe('incrementAndGateUsage', () => {
   it('should block when minutes cap is exceeded', async () => {
     const mockPool = {
       connect: vi.fn().mockResolvedValue({
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [] }) // BEGIN
-          .mockResolvedValueOnce({ rows: [{ minutes_used: 1001, jobs: 0, egress_bytes: 0, period_start: new Date(), plan: 'standard' }] })
+        query: vi
+          .fn()
+          .mockResolvedValueOnce({}) // BEGIN
+          .mockResolvedValueOnce({}) // insert usage_counters
+          .mockResolvedValueOnce({
+            rows: [
+              {
+                minutes_used: 1001,
+                jobs: 0,
+                egress_bytes: 0,
+                period_start: new Date(),
+                plan: 'standard',
+              },
+            ],
+          }) // select for update
           .mockResolvedValueOnce({}), // ROLLBACK
-        query: vi.fn().mockResolvedValue({}),
         release: vi.fn(),
       }),
     };
@@ -34,9 +45,21 @@ describe('incrementAndGateUsage', () => {
 
   it('should allow usage when within limits', async () => {
     const mockClient = {
-      query: vi.fn()
+      query: vi
+        .fn()
         .mockResolvedValueOnce({}) // BEGIN
-        .mockResolvedValueOnce({ rows: [{ minutes_used: 100, jobs: 50, egress_bytes: 1000, period_start: new Date(), plan: 'standard' }] })
+        .mockResolvedValueOnce({}) // insert usage_counters
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              minutes_used: 100,
+              jobs: 50,
+              egress_bytes: 1000,
+              period_start: new Date(),
+              plan: 'standard',
+            },
+          ],
+        }) // select for update
         .mockResolvedValueOnce({}) // UPDATE
         .mockResolvedValueOnce({}), // COMMIT
       release: vi.fn(),

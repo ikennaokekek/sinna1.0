@@ -6,18 +6,29 @@
   "scripts": {
     "deploy:cdn": "node scripts/deploy-cdn.js",
     "dev": "pnpm -C apps/api dev",
+    "dev:persist:start": "bash scripts/local-dev-persist.sh start",
+    "dev:persist:stop": "bash scripts/local-dev-persist.sh stop",
+    "dev:persist:status": "bash scripts/local-dev-persist.sh status",
     "dev:worker": "pnpm -C apps/worker dev",
     "build": "pnpm -C packages/types build && pnpm -C apps/api build && pnpm -C apps/worker build",
     "start": "node apps/api/dist/index.js",
     "start:worker": "node apps/worker/dist/index.js",
     "test": "jest",
     "test:vitest": "vitest run",
-    "test:heal": "vitest run tests/videoTransform.heal.ts",
+    "test:integration": "vitest run tests/integration",
+    "test:integration:local": "bash scripts/run-integration-local.sh",
+    "test:heal": "vitest run --config vitest.heal.config.ts",
+    "test:remote-diagnostic": "RUN_REMOTE_DIAGNOSTIC=1 vitest run --config vitest.remote-diagnostic.config.ts",
+    "test:unit": "pnpm -C apps/api test && vitest run && pnpm -C apps/worker test",
+    "test:ci": "pnpm build && pnpm test:unit",
+    "test:all:local": "pnpm test:ci && pnpm test:integration:local",
     "verify:production": "tsx scripts/verify-production.ts",
+    "smoke:staging": "tsx scripts/staging-job-smoke.ts",
+    "test:manual:client": "tsx scripts/manual-client-flow.ts",
     "watchdog": "tsx scripts/watchdog.ts",
     "watchdog:dev": "tsx watch scripts/watchdog.ts",
     "test:api": "tsx scripts/test-api-endpoints.ts",
-    "test:e2e": "E2E_BASE_URL=http://localhost:4000 npx playwright test",
+    "test:e2e": "npx playwright test --config=playwright.config.ts",
     "docker": "docker compose up -d",
     "gen:postman": "node scripts/generate-postman.js"
   },
@@ -59,7 +70,8 @@
     "nodemon": "^3.0.1",
     "playwright": "^1.56.0",
     "tsx": "^3.14.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^2.1.9"
   },
   "pnpm": {
     "overrides": {

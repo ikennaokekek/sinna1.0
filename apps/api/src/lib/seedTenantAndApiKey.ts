@@ -106,11 +106,17 @@ export async function seedTenantAndApiKey(): Promise<void> {
     }
     
     try {
-      await client.query(
-        `INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING`,
+      const insertRes = await client.query(
+        `INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING RETURNING 1`,
         [keyHash, tenantId]
       );
       console.log(`[seedTenantAndApiKey] ✅ API key linked to tenant: ${tenantId}`);
+      if (!isProduction && insertRes.rowCount && insertRes.rowCount > 0) {
+        console.log(
+          '[seedTenantAndApiKey] Local dev: new x-api-key was created (copy once; treat like a password):'
+        );
+        console.log(`[seedTenantAndApiKey] ${apiKeySecret}`);
+      }
     } catch (insertError: any) {
       // Handle foreign key violation specifically
       if (insertError?.code === '23503') {

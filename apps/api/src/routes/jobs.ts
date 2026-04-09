@@ -187,13 +187,18 @@ export function registerJobRoutes(
 
       // derive defaults from preset
       const preset = (body.preset_id || 'everyday').toLowerCase();
-      const presetsPath = path.join(__dirname, '..', '..', '..', 'config', 'presets.json');
+      // __dirname is apps/api/{src,dist}/routes/ — 4 levels up to repo root
+      const presetsPath = path.join(__dirname, '..', '..', '..', '..', 'config', 'presets.json');
+      // Fallback to cwd-relative path (Render sets cwd to repo root)
+      const presetsFallback = path.join(process.cwd(), 'config', 'presets.json');
       let presets: Record<string, PresetConfig> = {};
       try {
-        const presetsContent = fs.readFileSync(presetsPath, 'utf-8');
+        const resolvedPath = fs.existsSync(presetsPath) ? presetsPath : presetsFallback;
+        const presetsContent = fs.readFileSync(resolvedPath, 'utf-8');
         presets = JSON.parse(presetsContent) as Record<string, PresetConfig>;
-      } catch {
-        // Use defaults if file doesn't exist
+        req.log.info({ path: resolvedPath, presetCount: Object.keys(presets).length }, 'Loaded presets config');
+      } catch (err) {
+        req.log.warn({ err, presetsPath, presetsFallback }, 'Failed to load presets config, using defaults');
       }
       
       const presetCfg = presets[preset] || presets['everyday'] || { subtitleFormats: ['vtt', 'srt', 'ttml'] };
@@ -384,7 +389,8 @@ export function registerJobRoutes(
                       properties: {
                         status: { type: 'string' },
                         artifactKey: { type: 'string' },
-                        url: { type: 'string' }
+                        url: { type: 'string' },
+                        degraded: { type: 'boolean' }
                       }
                     },
                     ad: {
@@ -392,7 +398,8 @@ export function registerJobRoutes(
                       properties: {
                         status: { type: 'string' },
                         artifactKey: { type: 'string' },
-                        url: { type: 'string' }
+                        url: { type: 'string' },
+                        degraded: { type: 'boolean' }
                       }
                     },
                     color: {
@@ -400,7 +407,8 @@ export function registerJobRoutes(
                       properties: {
                         status: { type: 'string' },
                         artifactKey: { type: 'string' },
-                        url: { type: 'string' }
+                        url: { type: 'string' },
+                        degraded: { type: 'boolean' }
                       }
                     },
                     videoTransform: {
@@ -496,14 +504,17 @@ export function registerJobRoutes(
         captions: {
           status: cCompleted ? 'completed' : cFailed ? 'failed' : 'pending',
           artifactKey: cCompleted && c ? (c.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
+          degraded: cCompleted && c ? !!(c.returnvalue as { degraded?: boolean })?.degraded : undefined,
         },
         ad: {
           status: aCompleted ? 'completed' : aFailed ? 'failed' : 'pending',
           artifactKey: aCompleted && a ? (a.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
+          degraded: aCompleted && a ? !!(a.returnvalue as { degraded?: boolean })?.degraded : undefined,
         },
         color: {
           status: clCompleted ? 'completed' : clFailed ? 'failed' : 'pending',
           artifactKey: clCompleted && cl ? (cl.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
+          degraded: clCompleted && cl ? !!(cl.returnvalue as { degraded?: boolean })?.degraded : undefined,
         },
         ...(vt ? {
           videoTransform: {

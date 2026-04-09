@@ -2,27 +2,61 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
 
-env:
-  BASE_URL_PRIVATE: https://sinna1-0.onrender.com, http://localhost:4000
-  # Database and Redis URLs are now stored in GitHub Secrets for security
-  # See GITHUB_SECRETS_SETUP.md for setup instructions
-  DATABASE_URL: ${{ secrets.DATABASE_URL }}
-  REDIS_URL: ${{ secrets.REDIS_URL }}
-  # SEED_API_KEY_SECRET: Not needed in CI (dev mode generates random keys)
-  # For production, add SEED_API_KEY_SECRET as GitHub Secret
+# Local integration/E2E uses Postgres + Redis service containers (no cloud secrets required for PRs).
+# Optional remote smoke: set repository variable ENABLE_REMOTE_E2E=true and add secrets:
+#   STAGING_E2E_BASE_URL — e.g. https://your-staging-api.example.com
+#   TEST_API_KEY — valid key for that environment (same value can be used as API_KEY)
+# Local one-command real job + poll (uses same env names): pnpm smoke:staging
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Unit tests (API, root Vitest, worker)
+        run: pnpm test:unit
+
+  integration-e2e-local:
+    needs: [build]
+    runs-on: ubuntu-latest
+    env:
+      CI_TEST_API_KEY: sinna-ci-test-api-key
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      REDIS_URL: redis://127.0.0.1:6379
+      PORT: 4000
+      NODE_ENV: test
+      JWT_SECRET: ci-jwt-secret-not-for-production
+      # API boots without real cloud keys in NODE_ENV=test
+      STRIPE_SECRET_KEY: sk_test_ci_placeholder
+      STRIPE_WEBHOOK_SECRET: whsec_ci_placeholder
     services:
       postgres:
         image: postgres:15
         env:
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
         options: >-
@@ -39,17 +73,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
         with:
           version: 9
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'pnpm'
@@ -60,166 +92,135 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Install clients (jq, psql)
-        run: sudo apt-get update && sudo apt-get install -y jq postgresql-client
-
-      - name: Clean database before migrations
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL }}
-        run: |
-          echo "🧹 Cleaning database before migrations..."
-          psql "$DATABASE_URL" <<EOF
-          -- Drop all tables in correct order to avoid foreign key violations
-          DROP TABLE IF EXISTS api_keys CASCADE;
-          DROP TABLE IF EXISTS usage_counters CASCADE;
-          DROP TABLE IF EXISTS tenants CASCADE;
-          -- Drop any extensions if they exist
-          DROP EXTENSION IF EXISTS pgcrypto CASCADE;
-          EOF
-          echo "✅ Database cleaned"
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
       - name: Run DB migrations
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL }}
         run: pnpm -C apps/api run migrate
 
-      - name: Seed test tenant and API key
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL }}
+      - name: Seed CI tenant and API key
         run: |
-          set -e
-          H=$(printf YOUR_TEST_KEY | sha256sum | awk '{print $1}')
-          # Extract only the first line (UUID) and trim whitespace to prevent UUID format errors
-          # Using -q flag to suppress command status output, so we only get the UUID
-          TENANT_ID=$(psql "$DATABASE_URL" -Atq -c "insert into tenants(name, active, plan) values ('ci', true, 'standard') returning id;" | tr -d '[:space:]')
-          psql "$DATABASE_URL" -c "insert into api_keys(key_hash, tenant_id) values ('$H', '$TENANT_ID');"
+          set -euo pipefail
+          H=$(printf '%s' "$CI_TEST_API_KEY" | sha256sum | awk '{print $1}')
+          TENANT_ID=$(psql "$DATABASE_URL" -Atq -c \
+            "insert into tenants(name, active, plan, status) values ('ci', true, 'standard', 'active') returning id;" \
+            | tr -d '[:space:]')
+          psql "$DATABASE_URL" -c \
+            "insert into api_keys(key_hash, tenant_id) values ('$H', '$TENANT_ID');"
 
       - name: Start API
-        env:
-          DATABASE_URL: ${{ env.DATABASE_URL }}
-          REDIS_URL: ${{ env.REDIS_URL }}
-          PORT: 4000
-          STATUS_PAGE_URL: https://sinna.betteruptime.com/
-          NODE_ENV: test
         run: |
-          echo "🚀 Starting API server on port 4000..."
           nohup node apps/api/dist/index.js > api.log 2>&1 &
           echo $! > api.pid
-          echo "API process started with PID: $(cat api.pid)"
           sleep 2
-          echo "📋 Checking if API process is still running..."
-          if ps -p $(cat api.pid) > /dev/null 2>&1; then
-            echo "✅ API process is running (PID: $(cat api.pid))"
-            echo "📄 Last 20 lines of API log:"
-            tail -n 20 api.log || echo "No log output yet"
-          else
-            echo "❌ API process died immediately!"
-            echo "📄 Full API log:"
-            cat api.log || echo "No log file found"
+          if ! ps -p "$(cat api.pid)" > /dev/null 2>&1; then
+            echo "API exited during startup"
+            cat api.log
             exit 1
           fi
 
-      - name: Wait for API to be ready
-        run: |
-          echo "⏳ Waiting for API to start on port 4000..."
-          for i in {1..60}; do
-            # Check if process is still running
-            if ! ps -p $(cat api.pid) > /dev/null 2>&1; then
-              echo "❌ API process died! Checking logs..."
-              tail -n 50 api.log || echo "No log file"
-              exit 1
-            fi
-            # Check if API is responding
-            if curl -sSf http://localhost:4000/health > /dev/null 2>&1; then
-              echo "✅ API is ready and responding!"
-              echo "📄 API startup log:"
-              tail -n 30 api.log || echo "No log file"
-              exit 0
-            fi
-            if [ $((i % 5)) -eq 0 ]; then
-              echo "Attempt $i/60: API not ready yet, checking process..."
-              echo "Process status: $(ps -p $(cat api.pid) -o pid,stat,cmd --no-headers || echo 'Process not found')"
-              echo "Port 4000 status: $(lsof -i :4000 2>/dev/null | head -n 2 || echo 'Port not in use')"
-            else
-              echo "Attempt $i/60: API not ready yet, waiting 1 second..."
-            fi
-            sleep 1
-          done
-          echo "❌ API failed to start within 60 seconds"
-          echo "📄 Full API log:"
-          cat api.log || echo "No log file found"
-          echo "🔍 Process status:"
-          ps aux | grep "node apps/api" || echo "No API process found"
-          echo "🔍 Port 4000 status:"
-          lsof -i :4000 || echo "Port 4000 not in use"
-          exit 1
+      - name: Wait for API
+        run: bash scripts/wait-for-api.sh "http://127.0.0.1:${PORT}" 90
 
-      - name: Start dummy workers for queues
+      - name: Start minimal queue workers (BullMQ)
+        run: |
+          nohup node -e "
+            const { Worker } = require('bullmq');
+            const IORedis = require('ioredis');
+            const c = new IORedis(process.env.REDIS_URL);
+            const mk = (q) => new Worker(q, async () => ({ ok: true }), { connection: c });
+            mk('captions'); mk('ad'); mk('color'); mk('video-transform');
+            setInterval(() => {}, 1 << 30);
+          " > worker.log 2>&1 &
+          echo $! > worker.pid
+
+      - name: Vitest integration smoke (live HTTP)
         env:
-          REDIS_URL: ${{ env.REDIS_URL }}
-        run: |
-          nohup node -e "const { Worker } = require('bullmq'); const IORedis = require('ioredis'); const c = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379'); const mk=q=>new Worker(q, async()=>({ok:true}), { connection: c }); mk('captions'); mk('ad'); mk('color'); setInterval(()=>{}, 1<<30);" & echo $! > worker.pid
+          E2E_BASE_URL: http://127.0.0.1:4000
+          API_BASE_URL: http://127.0.0.1:4000
+          TEST_API_KEY: ${{ env.CI_TEST_API_KEY }}
+          API_KEY: ${{ env.CI_TEST_API_KEY }}
+        run: pnpm test:integration
 
-      - name: Real flow (create → poll until completed)
-        run: |
-          set -e
-          BASE=http://localhost:4000
-          curl -sSf $BASE/health
-          JOB=$(curl -sSf -X POST $BASE/v1/jobs \
-            -H 'x-api-key: YOUR_TEST_KEY' \
-            -H 'content-type: application/json' \
-            -d '{"source_url":"https://example.com/video.mp4","preset_id":"everyday"}')
-          echo "$JOB"
-          id=$(echo "$JOB" | jq -r .data.id)
-          for i in {1..60}; do
-            sleep 2
-            S=$(curl -sSf $BASE/v1/jobs/$id | jq -r 'if ([.data.status.captions,.data.status.ad,.data.status.color] | all(. == "completed")) then "completed" else "pending" end')
-            if [ "$S" = "completed" ]; then exit 0; fi
-          done
-          echo "job did not complete"; exit 1
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Playwright E2E (health)
+        env:
+          E2E_BASE_URL: http://127.0.0.1:4000
+          API_KEY: ${{ env.CI_TEST_API_KEY }}
+        run: pnpm test:e2e
+
+      - name: API package unit tests (with DB)
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: pnpm -C apps/api test
 
       - name: Stop API and workers
         if: always()
         run: |
-          if [ -f api.pid ]; then PID=$(cat api.pid); if kill -0 $PID 2>/dev/null; then kill -9 $PID; fi; fi
-          if [ -f worker.pid ]; then PID=$(cat worker.pid); if kill -0 $PID 2>/dev/null; then kill -9 $PID; fi; fi
+          for f in api.pid worker.pid; do
+            if [ -f "$f" ]; then
+              PID=$(cat "$f")
+              if kill -0 "$PID" 2>/dev/null; then kill -9 "$PID" || true; fi
+            fi
+          done
+          if [ -f api.log ]; then echo "--- api.log ---"; tail -n 80 api.log; fi
 
-      - name: Unit tests
-        run: pnpm test:unit --if-present
-
-  deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build]
+  # Runs only when repo variable ENABLE_REMOTE_E2E is set to the string "true".
+  # Configure secrets: STAGING_E2E_BASE_URL, TEST_API_KEY (must match a valid key on that deployment).
+  integration-e2e-remote:
+    if: vars.ENABLE_REMOTE_E2E == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Require staging secrets
+        env:
+          STAGING_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
+          STAGING_KEY: ${{ secrets.TEST_API_KEY }}
+        run: |
+          if [ -z "$STAGING_URL" ] || [ -z "$STAGING_KEY" ]; then
+            echo "ENABLE_REMOTE_E2E is true but STAGING_E2E_BASE_URL or TEST_API_KEY is empty."
+            echo "Add both as repository secrets (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
         with:
           version: 9
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'pnpm'
-      
-      - name: Deploy to Render (notification)
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Vitest integration smoke (staging)
+        env:
+          E2E_BASE_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
+          API_BASE_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
+          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
+          API_KEY: ${{ secrets.TEST_API_KEY }}
+        run: pnpm test:integration
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Playwright E2E (staging)
+        env:
+          E2E_BASE_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
+          API_KEY: ${{ secrets.TEST_API_KEY }}
+        run: pnpm test:e2e
+
+  deploy-notify:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build, integration-e2e-local]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Render auto-deploy note
         run: |
-          # Render auto-deploys from GitHub when connected via Blueprint
-          # This step just confirms the build passed
-          echo "✅ Build passed - Render will auto-deploy from main branch"
-          echo "Note: Ensure Render service is connected to this GitHub repo"
-          
-          # Render automatically deploys when changes are pushed to main branch
-          # No manual deployment step needed if Render is connected to this repo
-
-      - name: Run unit tests (root)
-        run: pnpm test:unit --if-present
-
-      - name: Run api tests
-        run: pnpm -C apps/api test --if-present
-
-
+          echo "Build and integration-e2e-local passed."
+          echo "If this repo is connected to Render, main will deploy automatically."
