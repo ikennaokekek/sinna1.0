@@ -158,6 +158,8 @@ app.addHook('preHandler', async (req, reply) => {
   // Test endpoints now require admin authentication
   // Sync endpoint has its own security (shared secret or IP allowlist)
   if (
+    req.url === '/health' ||
+    req.url === '/readiness' ||
     req.url.startsWith('/api-docs') ||
     req.url.startsWith('/billing/success') ||
     req.url.startsWith('/billing/cancel') ||
@@ -609,9 +611,13 @@ function registerTopLevelRoutes(): void {
     }
   }, async (req, reply) => {
     const key = req.headers['x-api-key'];
-    if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
     
-    // Check Redis status
+    // Basic liveness (no auth required — used by Render health checks)
+    if (typeof key !== 'string') {
+      return { ok: true, uptime: process.uptime() };
+    }
+    
+    // Extended health (with auth) includes Redis status
     const redisStatus = {
       configured: !!process.env.REDIS_URL,
       connected: false,
