@@ -420,7 +420,8 @@ export function registerJobRoutes(
                         status: { type: 'string' },
                         artifactKey: { type: 'string' },
                         url: { type: 'string' },
-                        degraded: { type: 'boolean' }
+                        degraded: { type: 'boolean' },
+                        failedReason: { type: 'string' }
                       }
                     },
                     ad: {
@@ -535,6 +536,7 @@ export function registerJobRoutes(
           status: cCompleted ? 'completed' : cFailed ? 'failed' : 'pending',
           artifactKey: cCompleted && c ? (c.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
           degraded: cCompleted && c ? !!(c.returnvalue as { degraded?: boolean })?.degraded : undefined,
+          failedReason: cFailed && c ? c.failedReason : undefined,
         },
         ad: {
           status: aCompleted ? 'completed' : aFailed ? 'failed' : 'pending',
