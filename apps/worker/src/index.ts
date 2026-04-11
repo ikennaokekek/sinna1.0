@@ -125,7 +125,7 @@ async function startWorkers() {
       body: JSON.stringify({
         audio_url: audioUrl,
         language_code: langCode,
-        speech_model: 'best',
+        speech_models: ['best'],
       }),
     });
     if (!createRes.ok) {
