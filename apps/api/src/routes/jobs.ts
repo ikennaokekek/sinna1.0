@@ -20,6 +20,24 @@ interface Queues {
   videoTransform: Queue;
 }
 
+// Built-in preset defaults — used when config/presets.json cannot be loaded from disk
+const BUILTIN_PRESETS: Record<string, PresetConfig> = {
+  everyday: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'standard', motionReduce: false, strobeReduce: true },
+  adhd: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'chunked', adEnabled: true, speed: 1.5, colorProfile: 'high-contrast', motionReduce: true, strobeReduce: true, videoTransform: true, videoTransformConfig: { motionReduce: true, saturation: 0.8, speed: 1.5 } },
+  autism: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'clear', adEnabled: true, speed: 0.9, colorProfile: 'calm', motionReduce: true, strobeReduce: true, videoTransform: true, videoTransformConfig: { motionReduce: true, strobeReduce: true, colorSoftening: true, saturation: 0.7 } },
+  low_vision: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'large-high-contrast', adEnabled: true, speed: 1.0, colorProfile: 'high-contrast', motionReduce: false, strobeReduce: true },
+  color: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'colorblind-safe', motionReduce: false, strobeReduce: true },
+  hoh: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'descriptive', adEnabled: true, speed: 1.0, colorProfile: 'standard', motionReduce: false, strobeReduce: true },
+  cognitive: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'simplified', adEnabled: true, speed: 0.95, colorProfile: 'standard', motionReduce: true, strobeReduce: true },
+  motion: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'reduced-motion', motionReduce: true, strobeReduce: true },
+  blindness: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'standard', motionReduce: false, videoTransform: true, videoTransformConfig: { audioDescription: true } },
+  deaf: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'descriptive', burnIn: true, adEnabled: false, speed: 1.0, colorProfile: 'standard', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { captionOverlay: true, volumeBoost: true } },
+  color_blindness: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'colorblind-safe', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { colorProfile: 'colorblind-safe', filter: 'e_colorblind_correction' } },
+  epilepsy_flash: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'low-contrast', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { flashReduce: true, brightness: -0.05, contrast: -0.1 } },
+  epilepsy_noise: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'standard', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { audioSmooth: true, lowPassFilter: true } },
+  cognitive_load: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'simplified', adEnabled: true, speed: 0.95, colorProfile: 'standard', motionReduce: true, strobeReduce: true, videoTransform: true, videoTransformConfig: { simplifiedText: true, focusHighlight: true } },
+};
+
 export function registerJobRoutes(
   app: FastifyInstance,
   queues: Queues,
@@ -188,17 +206,29 @@ export function registerJobRoutes(
       // derive defaults from preset
       const preset = (body.preset_id || 'everyday').toLowerCase();
       // __dirname is apps/api/{src,dist}/routes/ — 4 levels up to repo root
-      const presetsPath = path.join(__dirname, '..', '..', '..', '..', 'config', 'presets.json');
-      // Fallback to cwd-relative path (Render sets cwd to repo root)
-      const presetsFallback = path.join(process.cwd(), 'config', 'presets.json');
+      // Try multiple paths to find presets.json (handles different deployment layouts)
+      const presetPaths = [
+        path.join(__dirname, '..', '..', '..', '..', 'config', 'presets.json'),
+        path.join(process.cwd(), 'config', 'presets.json'),
+        path.join(__dirname, '..', '..', 'config', 'presets.json'),
+        path.join(__dirname, '..', 'config', 'presets.json'),
+      ];
       let presets: Record<string, PresetConfig> = {};
       try {
-        const resolvedPath = fs.existsSync(presetsPath) ? presetsPath : presetsFallback;
-        const presetsContent = fs.readFileSync(resolvedPath, 'utf-8');
-        presets = JSON.parse(presetsContent) as Record<string, PresetConfig>;
-        req.log.info({ path: resolvedPath, presetCount: Object.keys(presets).length }, 'Loaded presets config');
+        const resolvedPath = presetPaths.find(p => fs.existsSync(p));
+        if (resolvedPath) {
+          const presetsContent = fs.readFileSync(resolvedPath, 'utf-8');
+          presets = JSON.parse(presetsContent) as Record<string, PresetConfig>;
+          req.log.info({ path: resolvedPath, presetCount: Object.keys(presets).length }, 'Loaded presets config');
+        } else {
+          req.log.warn({ tried: presetPaths }, 'No presets file found at any path, using built-in defaults');
+        }
       } catch (err) {
-        req.log.warn({ err, presetsPath, presetsFallback }, 'Failed to load presets config, using defaults');
+        req.log.warn({ err }, 'Failed to load presets config, using built-in defaults');
+      }
+      // Built-in fallback: ensures videoTransform presets always work even if file is missing
+      if (Object.keys(presets).length === 0) {
+        presets = BUILTIN_PRESETS;
       }
       
       const presetCfg = presets[preset] || presets['everyday'] || { subtitleFormats: ['vtt', 'srt', 'ttml'] };
@@ -519,24 +549,32 @@ export function registerJobRoutes(
         ...(vt ? {
           videoTransform: {
             status: vtCompleted ? 'completed' : vtFailed ? 'failed' : 'pending',
-            artifactKey: vtCompleted ? (vt.returnvalue as { artifactKey?: string; cloudinaryUrl?: string })?.artifactKey : undefined,
-            cloudinaryUrl: vtCompleted ? (vt.returnvalue as { artifactKey?: string; cloudinaryUrl?: string })?.cloudinaryUrl : undefined,
+            artifactKey: vtCompleted ? (vt.returnvalue as any)?.artifactKey : undefined,
+            cloudinaryUrl: vtCompleted ? (vt.returnvalue as any)?.cloudinaryUrl : undefined,
+            degraded: vtCompleted ? !!(vt.returnvalue as any)?.degraded : undefined,
           },
         } : {}),
       };
 
-      // Determine overall status
-      const overallStatus: JobStatusResponse['status'] = 
-        (status.videoTransform?.status === 'completed' || !status.videoTransform) &&
-        status.captions?.status === 'completed' &&
-        status.ad?.status === 'completed' &&
-        status.color?.status === 'completed'
-          ? 'completed'
-          : status.captions?.status === 'failed' || status.ad?.status === 'failed' || status.color?.status === 'failed' || status.videoTransform?.status === 'failed'
-          ? 'failed'
-          : status.captions?.status === 'pending' && status.ad?.status === 'pending' && status.color?.status === 'pending' && (!status.videoTransform || status.videoTransform.status === 'pending')
-          ? 'pending'
-          : 'processing';
+      // Determine overall status — partial success is still 'completed'
+      const stepStatuses = [
+        status.captions?.status,
+        status.ad?.status,
+        status.color?.status,
+        status.videoTransform?.status,
+      ].filter(Boolean) as string[];
+      const allCompleted = stepStatuses.every(s => s === 'completed');
+      const anyCompleted = stepStatuses.some(s => s === 'completed');
+      const allFailed = stepStatuses.every(s => s === 'failed');
+      const anyPending = stepStatuses.some(s => s === 'pending');
+      const anyProcessing = stepStatuses.some(s => s === 'processing');
+
+      const overallStatus: JobStatusResponse['status'] =
+        allCompleted ? 'completed'
+        : allFailed ? 'failed'
+        : anyCompleted && !anyPending && !anyProcessing ? 'completed' // partial: some completed, some failed
+        : anyProcessing || anyCompleted ? 'processing'
+        : 'pending';
 
       // metrics
       if (cFailed || aFailed || clFailed || vtFailed) {

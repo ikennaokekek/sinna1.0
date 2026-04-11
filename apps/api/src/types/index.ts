@@ -119,6 +119,7 @@ export interface JobStatusResponse {
       artifactKey?: string;
       url?: string;
       cloudinaryUrl?: string;
+      degraded?: boolean;
     };
   };
   preset: string;

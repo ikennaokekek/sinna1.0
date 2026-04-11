@@ -987,7 +987,7 @@ function registerTopLevelRoutes(): void {
       active: false,
       usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
     } as TenantState;
-  res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
+  return res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
 });
 
   // GET /v1/files/:id:sign

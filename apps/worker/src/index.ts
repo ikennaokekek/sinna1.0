@@ -229,10 +229,17 @@ async function startWorkers() {
         console.log(degraded ? '⚠️ Captions completed (degraded):' : '✅ Captions completed:', key);
         return { ok: true, degraded, artifactKey: key, tenantId };
       } catch (error) {
-        console.error('Failed to upload captions to R2:', error instanceof Error ? error.message : String(error));
-        throw error; // Re-throw to mark job as failed
+        console.error('⚠️ Failed to upload captions to R2:', error instanceof Error ? error.message : String(error));
+        return { ok: true, degraded: true, tenantId };
       }
     }, { connection });
+
+    // Minimal valid silent MP3: MPEG1 Layer III, 32kbps, 44100Hz, mono, 3 frames (~78ms)
+    const SILENCE_MP3 = (() => {
+      const header = Buffer.from([0xff, 0xfb, 0x10, 0xc4]);
+      const frame = Buffer.concat([header, Buffer.alloc(100)]); // 104 bytes per frame
+      return Buffer.concat([frame, frame, frame]); // ~78ms of silence
+    })();
 
     // ad (TTS)
     const openaiKey = process.env.OPENAI_API_KEY || '';
@@ -244,12 +251,12 @@ async function startWorkers() {
       // If AD is disabled for this preset, produce a minimal degraded marker
       if (!enabled) {
         const key = `artifacts/${tenantId || 'anon'}/${job.id}.mp3`;
-        await uploadToR2(key, Buffer.alloc(0), 'audio/mpeg');
+        await uploadToR2(key, SILENCE_MP3, 'audio/mpeg');
         console.log('⚠️ AD skipped (disabled for preset):', key);
         return { ok: true, degraded: true, artifactKey: key, tenantId };
       }
 
-      let body: Buffer = Buffer.alloc(0);
+      let body: Buffer = SILENCE_MP3;
       const ct = 'audio/mpeg';
       let degraded = false;
 
@@ -303,8 +310,8 @@ async function startWorkers() {
         console.log(degraded ? '⚠️ AD completed (degraded):' : '✅ AD completed:', key);
         return { ok: true, degraded, artifactKey: key, tenantId };
       } catch (error) {
-        console.error('Failed to upload AD to R2:', error instanceof Error ? error.message : String(error));
-        throw error;
+        console.error('⚠️ Failed to upload AD to R2:', error instanceof Error ? error.message : String(error));
+        return { ok: true, degraded: true, tenantId };
       }
     }, { connection });
 
@@ -420,8 +427,8 @@ async function startWorkers() {
         console.log(degraded ? '⚠️ Color completed (degraded):' : '✅ Color completed:', key);
         return { ok: true, degraded, artifactKey: key, tenantId };
       } catch (error) {
-        console.error('Failed to upload color analysis to R2:', error instanceof Error ? error.message : String(error));
-        throw error; // Re-throw to mark job as failed
+        console.error('⚠️ Failed to upload color analysis to R2:', error instanceof Error ? error.message : String(error));
+        return { ok: true, degraded: true, tenantId };
       }
     }, { connection });
 

@@ -566,8 +566,8 @@ export function createVideoTransformWorker(connection: IORedis): Worker {
           presetId,
         };
       } catch (error) {
-        console.error('Video transformation failed:', error instanceof Error ? error.message : String(error));
-        throw error; // Re-throw to mark job as failed
+        console.error('⚠️ Video transformation failed, returning degraded:', error instanceof Error ? error.message : String(error));
+        return { ok: true, degraded: true, tenantId, presetId };
       }
     },
     { connection }
