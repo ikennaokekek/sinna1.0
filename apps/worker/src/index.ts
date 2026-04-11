@@ -119,13 +119,13 @@ async function startWorkers() {
     const langMap: Record<string, string> = { en: 'en_us', es: 'es', fr: 'fr', de: 'de', pt: 'pt', it: 'it', nl: 'nl', ja: 'ja', zh: 'zh', ko: 'ko' };
     const langCode = opts.language ? (langMap[opts.language] || opts.language) : 'en_us';
 
-    const createRes = await fetch('https://api.assemblyai.com/v2/transcripts', {
+    const createRes = await fetch('https://api.assemblyai.com/v2/transcript', {
       method: 'POST',
       headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         audio_url: audioUrl,
         language_code: langCode,
-        speech_models: ['best'],
+        speech_models: ['universal-3-pro'],
       }),
     });
     if (!createRes.ok) {
@@ -138,7 +138,7 @@ async function startWorkers() {
     if (!id) throw new Error('assemblyai_create_failed_no_id');
     for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 2000));
-      const pollRes = await fetch(`https://api.assemblyai.com/v2/transcripts/${id}`, {
+      const pollRes = await fetch(`https://api.assemblyai.com/v2/transcript/${id}`, {
         headers: { 'Authorization': apiKey },
       });
       const data = await pollRes.json();
