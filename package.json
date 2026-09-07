@@ -42,8 +42,8 @@
   "author": "Sinna Team",
   "license": "MIT",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.441.0",
-    "@aws-sdk/s3-request-presigner": "^3.441.0",
+    "@aws-sdk/client-s3": "3.1127.0",
+    "@aws-sdk/s3-request-presigner": "3.1127.0",
     "@sentry/node": "^7.77.0",
     "assemblyai": "^4.0.0",
     "bullmq": "^4.15.0",

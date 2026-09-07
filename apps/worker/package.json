@@ -15,7 +15,7 @@
     "bullmq": "^4.15.0",
     "ioredis": "^5.3.2",
     "pg": "^8.16.3",
-    "@aws-sdk/client-s3": "^3.657.0",
+    "@aws-sdk/client-s3": "3.1127.0",
     "cloudinary": "^1.41.0",
     "openai": "^4.20.1"
   },
