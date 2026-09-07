@@ -9,7 +9,12 @@
     "build": "NODE_OPTIONS='--max-old-space-size=2048' npx tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "migrate": "MIGRATE_STANDALONE=true node -e \"(async()=>{const{runMigrations}=await import('./dist/lib/db.js');await runMigrations();console.log('migrations done')})().catch(e=>{console.error(e);process.exit(1)})\"",
+    "migrate": "node dist/scripts/migrate.js",
+    "migrate:status": "pnpm migrate status",
+    "migrate:verify": "pnpm migrate verify",
+    "migrate:baseline": "pnpm migrate baseline",
+    "migrate:apply": "pnpm migrate apply",
+    "test:migrate:integration": "vitest run src/lib/migrationLedger.integration.test.ts",
     "seed": "node dist/scripts/seed.js"
   },
   "dependencies": {

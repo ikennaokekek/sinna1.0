@@ -155,66 +155,6 @@ export async function withRetry<T>(
   throw lastError;
 }
 
-export async function runMigrations(): Promise<void> {
-  const { pool } = getDb();
-  const fs = await import('fs');
-  const path = await import('path');
-  const migrationsDir = path.resolve(__dirname, '..', '..', 'migrations');
-  
-  // Get all .sql files and sort them
-  const files = fs.readdirSync(migrationsDir)
-    .filter((f: string) => f.endsWith('.sql'))
-    .sort();
-  
-  console.log(`[runMigrations] Found ${files.length} migration files: ${files.join(', ')}`);
-  
-  // Run each migration in order
-  for (const file of files) {
-    const migPath = path.join(migrationsDir, file);
-    const sql = fs.readFileSync(migPath, 'utf-8');
-    console.log(`[runMigrations] Running migration: ${file}`);
-    try {
-      await pool.query(sql);
-      console.log(`[runMigrations] ✅ Successfully ran migration: ${file}`);
-    } catch (error: any) {
-      console.error(`[runMigrations] ❌ Failed to run migration ${file}:`, error.message);
-      console.error(`[runMigrations] Error code: ${error.code}, Detail: ${error.detail}`);
-      throw new Error(`Migration ${file} failed: ${error.message}`);
-    }
-  }
-  
-  // Seed tenant and API key after migrations complete
-  // This is optional and failures should not block migrations
-  // Skip seeding in CI to avoid hanging (CI will use test data)
-  const isCI = process.env.CI === 'true';
-  if (!isCI) {
-    try {
-      const { seedTenantAndApiKey } = await import('./seedTenantAndApiKey');
-      await seedTenantAndApiKey();
-      console.log('[runMigrations] ✅ Tenant and API key seeding completed');
-    } catch (error: any) {
-      // Log but don't fail migrations if seeding fails
-      // This allows migrations to complete even if seeding has issues
-      console.error('[runMigrations] ⚠️  Failed to seed tenant and API key (non-fatal):', error?.message || error);
-      if (error?.code) {
-        console.error(`[runMigrations] Database error code: ${error.code}`);
-      }
-      // Continue - migrations are complete, seeding is optional
-    }
-  } else {
-    console.log('[runMigrations] ⏭️  Skipping seeding in CI environment');
-  }
-  
-  // CRITICAL: Close pool connection to allow process to exit
-  // This prevents GitHub Actions from hanging indefinitely
-  // Only close if we're in a migration script context (not main app)
-  const isStandaloneMigration = process.argv[1]?.includes('migrate') || process.env.MIGRATE_STANDALONE === 'true';
-  if (isStandaloneMigration || isCI) {
-    await pool.end();
-    console.log('[runMigrations] ✅ Database pool closed');
-  }
-}
-
 /**
  * Get environment-specific tenant email
  * Development: ikennaokeke1996@gmail.com

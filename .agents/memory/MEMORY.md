@@ -1,1 +1,2 @@
 - [Replit package-firewall toolchain](package-firewall-toolchain.md) — prefer supported parent upgrades; current SINNA test tooling needs a Node-20-compatible Vitest/Vite/tsx set.
+- [Imported schema baselines](imported-schema-baselines.md) — fingerprint the reconciled live baseline, then trust immutable ledger history after future migrations evolve it.

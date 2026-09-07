@@ -18,7 +18,7 @@ import * as Sentry from '@sentry/node';
 import fastifyRawBody from 'fastify-raw-body';
 import { sendEmailNotice } from './lib/email';
 import { RateLimiterRedis, RateLimiterMemory } from 'rate-limiter-flexible';
-import { getDb, runMigrations, seedTenantAndApiKey } from './lib/db';
+import { getDb, seedTenantAndApiKey } from './lib/db';
 import { hashKey } from './lib/auth';
 import { incrementAndGateUsage } from './lib/usage';
 import { isProduction } from './config/env';
@@ -1152,11 +1152,6 @@ async function start() {
         persistAuthorization: true
       }
     });
-    
-    if (process.env.RUN_MIGRATIONS_ON_BOOT === '1') {
-      await runMigrations();
-      app.log.info('DB migrations completed');
-    }
     
     // Verify database connection health
     try {

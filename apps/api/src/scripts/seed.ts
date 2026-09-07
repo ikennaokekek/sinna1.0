@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { runMigrations, seedTenantAndApiKey } from '../lib/db';
+import { seedTenantAndApiKey } from '../lib/db';
 
 async function main() {
 	// Use environment-specific tenant email based on NODE_ENV
@@ -18,9 +18,6 @@ async function main() {
 		process.exit(1);
 	}
 	const apiKeyHash = crypto.createHash('sha256').update(apiKey).digest('hex');
-
-	console.log('Running migrations...');
-	await runMigrations();
 
 	console.log('Seeding tenant and API key...');
 	console.log(`Environment: ${isDev ? 'development' : 'production'}`);
