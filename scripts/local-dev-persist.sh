@@ -41,7 +41,7 @@ ensure_postgres() {
       -e POSTGRES_PASSWORD=postgres \
       -e POSTGRES_DB=postgres \
       -p "${PG_PORT}:5432" \
-      postgres:15 >/dev/null
+      postgres:17 >/dev/null
   fi
 }
 
@@ -97,9 +97,30 @@ cmd_start() {
   wait_pg
   wait_redis
 
-  echo "Running migrations..."
+  local pg_major ledger_exists app_table_count
+  pg_major="$(docker exec "$PG_NAME" psql -U postgres -d postgres -Atqc "SHOW server_version_num" | awk '{ print int($1 / 10000) }')"
+  if (( pg_major < 17 )); then
+    echo "The existing $PG_NAME container uses PostgreSQL $pg_major; PostgreSQL 17+ is required."
+    echo "Back up any needed local data, remove that container manually, and retry."
+    exit 1
+  fi
+
+  echo "Applying explicit migrations..."
   export DATABASE_URL
-  pnpm -C apps/api run migrate
+  ledger_exists="$(docker exec "$PG_NAME" psql -U postgres -d postgres -Atqc \
+    "SELECT to_regclass('public.sinna_core_schema_migrations') IS NOT NULL")"
+  if [[ "$ledger_exists" != "t" ]]; then
+    app_table_count="$(docker exec "$PG_NAME" psql -U postgres -d postgres -Atqc \
+      "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")"
+    if [[ "$app_table_count" != "0" ]]; then
+      echo "The local database has application tables but no migration ledger."
+      echo "Refusing automatic baseline; reconcile or recreate the local database explicitly."
+      exit 1
+    fi
+    pnpm migrate:bootstrap
+  fi
+  pnpm migrate:apply
+  pnpm migrate:verify
 
   if api_running; then
     echo "API already running (PID $(cat "$PID_FILE")). Log: $LOG_FILE"

@@ -90,10 +90,6 @@ services:
       - key: CORS_ORIGINS
         sync: false
       
-      # Boot behavior
-      - key: RUN_MIGRATIONS_ON_BOOT
-        value: 1
-      
       # Feature Flags
       - key: FEATURE_REALTIME
         value: 0
