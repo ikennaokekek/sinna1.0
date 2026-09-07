@@ -9,7 +9,6 @@ import { getSignedGetUrl } from './lib/r2';
 import * as fs from 'fs';
 import * as path from 'path';
 import IORedis from 'ioredis';
-import crypto from 'crypto';
 // duplicate imports removed
 import { Queue } from 'bullmq';
 import { redisConnection, verifyRedisConnection } from './lib/redis';
@@ -32,6 +31,7 @@ import { registerSyncRoutes } from './routes/sync';
 import { requestIdHook } from './middleware/requestId';
 import { sendErrorResponse } from './lib/errors';
 import { regionLanguageMiddleware } from './middleware/regionLanguage';
+import { requireAdminAccess } from './lib/adminAuth';
 
 const app = Fastify({
   logger: true,
@@ -163,7 +163,7 @@ app.addHook('preHandler', async (req, reply) => {
     req.url.startsWith('/api-docs') ||
     req.url.startsWith('/billing/success') ||
     req.url.startsWith('/billing/cancel') ||
-    req.url.startsWith('/webhooks/stripe') ||
+    (req.url === '/webhooks/stripe' || req.url.startsWith('/webhooks/stripe?')) ||
     req.url.startsWith('/v1/sync/tenant')
   ) {
     return;
@@ -237,7 +237,6 @@ app.post('/test-email', {
           message: { type: 'string' },
           to: { type: 'string' },
           subject: { type: 'string' },
-          apiKey: { type: 'string' }
         }
       },
       400: {
@@ -265,15 +264,7 @@ app.post('/test-email', {
     }
   }
 }, async (req, reply) => {
-  // Admin authentication check (always enforced; disabled by default in production)
-  if (process.env.NODE_ENV === 'production' && process.env.ADMIN_ENDPOINTS_ENABLED !== '1') {
-    return reply.code(403).send({ success: false, error: 'Forbidden: Admin endpoints disabled' });
-  }
-  const adminKey = process.env.ADMIN_API_KEY || '';
-  const providedKey = (req.headers['x-admin-key'] as string | undefined) || '';
-  if (!adminKey || providedKey !== adminKey) {
-    return reply.code(403).send({ success: false, error: 'Forbidden: Admin access required' });
-  }
+  if (!requireAdminAccess(req, reply)) return;
   
   try {
     const body = req.body as { to?: string; subject?: string; text?: string };
@@ -286,23 +277,7 @@ app.post('/test-email', {
     const testEmail = to;
     const testSubject = subject || 'SendGrid connection test';
     
-    // Generate a production-ready API key for testing
-    const crypto = await import('crypto');
-    const randomBytes = crypto.randomBytes(24);
-    const randomString = randomBytes.toString('base64')
-      .replace(/[+/=]/g, '') // Remove base64 special chars
-      .toLowerCase()
-      .substring(0, 32); // Ensure consistent length
-    
-    const apiKey = `sk_live_${randomString}`;
-    
-    // If custom text is provided, append the API key to it
-    let finalText;
-    if (text) {
-      finalText = `${text}\n\nYour Production API Key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.`;
-    } else {
-      finalText = `✅ Success! Your Render app can send email now.\n\nYour Production API Key: ${apiKey}\n\nBase URL: ${process.env.BASE_URL_PUBLIC || 'https://sinna.site'}\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nThis is your actual production-ready API key! 🚀`;
-    }
+    const finalText = text || '✅ Success! Your email integration is configured correctly.';
     
     await sendEmailNotice(testEmail, testSubject, finalText);
     
@@ -310,8 +285,7 @@ app.post('/test-email', {
       success: true, 
       message: 'Email sent successfully!',
       to: testEmail,
-      subject: testSubject,
-      apiKey: apiKey
+      subject: testSubject
     });
   } catch (error) {
     req.log.error({ error }, 'Failed to send test email');
@@ -355,15 +329,7 @@ app.get('/email-status', {
     }
   }
 }, async (req, reply) => {
-  // Admin authentication check (always enforced; disabled by default in production)
-  if (process.env.NODE_ENV === 'production' && process.env.ADMIN_ENDPOINTS_ENABLED !== '1') {
-    return reply.code(403).send({ success: false, error: 'Forbidden: Admin endpoints disabled' });
-  }
-  const adminKey = process.env.ADMIN_API_KEY || '';
-  const providedKey = (req.headers['x-admin-key'] as string | undefined) || '';
-  if (!adminKey || providedKey !== adminKey) {
-    return reply.code(403).send({ success: false, error: 'Forbidden: Admin access required' });
-  }
+  if (!requireAdminAccess(req, reply)) return;
   
   const resendKey = process.env.RESEND_API_KEY;
   const sendgridKey = process.env.SENDGRID_API_KEY;
@@ -473,35 +439,18 @@ function isTrustedByCidr(ip: string): boolean {
   });
 }
 
-function constantTimeEquals(a: string, b: string): boolean {
-  const aBuf = Buffer.from(a);
-  const bBuf = Buffer.from(b);
-  if (aBuf.length !== bBuf.length) return false;
-  return crypto.timingSafeEqual(aBuf, bBuf);
-}
-
-function isHmacTrusted(req: FastifyRequest): boolean {
-  const secret = process.env.WEBHOOK_SIGNING_SECRET || '';
-  if (!secret) return false;
-  const headerName = (process.env.WEBHOOK_HMAC_HEADER || 'x-webhook-signature').toLowerCase();
-  const sigHeader = (req.headers[headerName] as string | undefined) || '';
-  if (!sigHeader) return false;
-  const provided = sigHeader.startsWith('sha256=') ? sigHeader.slice(7) : sigHeader;
-  const raw = (req as AuthenticatedRequest).rawBody || Buffer.from(JSON.stringify(req.body || {}));
-  const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
-  return constantTimeEquals(expected, provided);
-}
-
 function getClientKey(req: FastifyRequest): string {
   return (req as AuthenticatedRequest).tenantId || req.ip;
 }
 
+// Sensitive endpoints have a deliberately smaller independent budget.
+let adminLimiter: RateLimiterRedis | RateLimiterMemory = new RateLimiterMemory({ points: 10, duration: 60 });
 // Webhook-specific rate limiter (higher limit but still limited)
 let webhookLimiter: RateLimiterRedis | RateLimiterMemory = new RateLimiterMemory({ points: 100, duration: 60 });
 
 app.addHook('preHandler', async (req, reply) => {
   // Apply webhook rate limiting separately
-  if (req.url === '/webhooks/stripe') {
+  if (req.url === '/webhooks/stripe' || req.url.startsWith('/webhooks/stripe?')) {
     try {
       const res = await webhookLimiter.consume(req.ip, 1);
       reply.header('X-RateLimit-Limit', '100');
@@ -525,8 +474,22 @@ app.addHook('preHandler', async (req, reply) => {
     return;
   }
 
-  // Bypass if from trusted CIDR or HMAC-verified webhook
-  if (isTrustedByCidr(req.ip) || isHmacTrusted(req)) {
+  if (req.url === '/test-email' || req.url === '/email-status') {
+    try {
+      const res = await adminLimiter.consume(req.ip, 1);
+      reply.header('X-RateLimit-Limit', '10');
+      reply.header('X-RateLimit-Remaining', Math.max(0, res.remainingPoints));
+    } catch (rej: unknown) {
+      const retrySec = Math.ceil(((rej as { msBeforeNext?: number }).msBeforeNext || 1000) / 1000);
+      reply.header('Retry-After', retrySec);
+      return reply.code(429).send({ code: 'rate_limited', retry_after_seconds: retrySec });
+    }
+    return;
+  }
+
+  // Trusted infrastructure can bypass the general client limiter. Webhook
+  // signatures never bypass limits; Stripe has its own dedicated limiter.
+  if (isTrustedByCidr(req.ip)) {
     return;
   }
 
@@ -691,39 +654,12 @@ function registerTopLevelRoutes(): void {
       }
     }
   }, async (req, reply) => {
-    const sessionId = (req.query as { session_id?: string })?.session_id;
-    
-    // Try to retrieve API key from Redis (stored by webhook handler)
-    let apiKey: string | null = null;
-    let customerEmail: string | null = null;
-    
-    if (sessionId) {
-      try {
-        // Try to get API key from Redis (works for both test and live Stripe sessions)
-        apiKey = await redisConnection.get(`api_key:${sessionId}`).catch(() => null);
-        
-        // Also try to get customer email from Stripe for better messaging
-        if (stripe && !apiKey) {
-          try {
-            const session = await stripe.checkout.sessions.retrieve(sessionId);
-            customerEmail = session.customer_details?.email || null;
-          } catch {
-            // Ignore Stripe errors
-          }
-        }
-      } catch (err) {
-        // Redis might be unavailable - fall back to email-only message
-        app.log.warn({ sessionId, error: err }, 'Failed to retrieve API key from Redis');
-      }
-    }
-    
-    // Build HTML with or without API key display
-    const hasApiKey = !!apiKey;
-    const emailMessage = hasApiKey 
-      ? `Your API key is below. It has also been sent to your email.`
-      : customerEmail
-      ? `Your API key is being generated and will be emailed to ${customerEmail} shortly.`
-      : 'Your API key is being generated and will be emailed to you shortly.';
+    // API secrets are never displayed from a public redirect URL. The
+    // authenticated Stripe onboarding flow delivers them through its
+    // designated email channel instead.
+    const apiKey: string | null = null;
+    const hasApiKey = false;
+    const emailMessage = 'Your API key is being generated and will be emailed to you shortly.';
     
     return reply.type('text/html').send(`
       <html lang="en">
@@ -1212,6 +1148,15 @@ async function start() {
           execEvenly: true,
           blockDuration: 0,
           insuranceLimiter: new RateLimiterMemory({ points: 100, duration: 60 }),
+        });
+        adminLimiter = new RateLimiterRedis({
+          storeClient: redis,
+          points: 10,
+          duration: 60,
+          keyPrefix: 'rlf:admin',
+          execEvenly: true,
+          blockDuration: 0,
+          insuranceLimiter: new RateLimiterMemory({ points: 10, duration: 60 }),
         });
         app.log.info('Redis connected; using distributed rate limiter');
       } catch (e) {

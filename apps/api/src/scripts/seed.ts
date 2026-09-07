@@ -32,7 +32,7 @@ async function main() {
 			plan, 
 			apiKeyHash: apiKeyHash.substring(0, 16) + '...' 
 		});
-		console.log('🔑 Store this API key securely (not in code):', apiKey);
+		console.log('✅ Seed completed. API key material is never printed.');
 	} catch (error: any) {
 		console.error('❌ Seed failed:', error.message);
 		if (error.code) {

@@ -6,6 +6,7 @@ import util from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { downloadExternalMedia, safeExternalFetch } from './lib/ssrf';
 
 const execAsync = util.promisify(exec);
 
@@ -41,7 +42,7 @@ interface VideoTransformJobData {
  * Transform video using Cloudinary SDK
  */
 async function transformWithCloudinary(
-  videoUrl: string,
+  video: Buffer,
   transformConfig: VideoTransformJobData['transformConfig']
 ): Promise<string> {
   const cloudinaryUrl = process.env.CLOUDINARY_URL;
@@ -150,10 +151,13 @@ async function transformWithCloudinary(
 
     console.log('📤 Uploading video to Cloudinary with transformations:', JSON.stringify(transformations));
 
-    const result = await cloudinary.uploader.upload(videoUrl, {
-      resource_type: 'video',
-      folder: 'sinna/transformed',
-      transformation: transformations,
+    const result: any = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream({
+        resource_type: 'video',
+        folder: 'sinna/transformed',
+        transformation: transformations,
+      }, (error: Error | undefined, uploadResult: any) => error ? reject(error) : resolve(uploadResult));
+      stream.end(video);
     });
 
     if (!result.secure_url) {
@@ -165,7 +169,7 @@ async function transformWithCloudinary(
   } catch (sdkError: any) {
     // Fallback to REST API if SDK import fails
     console.warn('Cloudinary SDK not available, using REST API:', sdkError.message);
-    return transformWithCloudinaryRest(videoUrl, transformConfig, apiKey, apiSecret, cloudName);
+    return transformWithCloudinaryRest(video, transformConfig, apiKey, apiSecret, cloudName);
   }
 }
 
@@ -173,7 +177,7 @@ async function transformWithCloudinary(
  * Fallback: Transform video using Cloudinary REST API
  */
 async function transformWithCloudinaryRest(
-  videoUrl: string,
+  video: Buffer,
   transformConfig: VideoTransformJobData['transformConfig'],
   apiKey: string,
   apiSecret: string,
@@ -257,7 +261,8 @@ async function transformWithCloudinaryRest(
   const crypto = await import('crypto');
   
   const formData = new URLSearchParams();
-  formData.append('file', videoUrl);
+  // A data URI keeps Cloudinary from resolving the user-provided URL itself.
+  formData.append('file', `data:video/mp4;base64,${video.toString('base64')}`);
   formData.append('resource_type', 'video');
   formData.append('transformation', transformString);
   formData.append('api_key', apiKey);
@@ -315,11 +320,7 @@ async function transformWithFFmpeg(
 
   try {
     // Download video
-    const videoResponse = await fetch(inputUrl);
-    if (!videoResponse.ok) {
-      throw new Error(`Failed to download video: ${videoResponse.status}`);
-    }
-    const videoBuffer = Buffer.from(await videoResponse.arrayBuffer());
+    const { body: videoBuffer } = await downloadExternalMedia(inputUrl);
     fs.writeFileSync(inputPath, videoBuffer);
 
     // Download audio description if needed for blindness preset
@@ -526,10 +527,11 @@ export function createVideoTransformWorker(connection: IORedis): Worker {
           // Use Cloudinary transformation API (faster, serverless)
           // Note: If audio filtering or advanced features are needed, use FFmpeg fallback for better control
           console.log('☁️ Using Cloudinary for video transformation');
-          transformedVideoUrl = await transformWithCloudinary(videoUrl, transformConfig);
+          const { body: sourceVideo } = await downloadExternalMedia(videoUrl);
+          transformedVideoUrl = await transformWithCloudinary(sourceVideo, transformConfig);
 
           // Download transformed video from Cloudinary
-          const videoResponse = await fetch(transformedVideoUrl);
+          const videoResponse = await safeExternalFetch(transformedVideoUrl);
           if (!videoResponse.ok) {
             throw new Error(`Failed to download transformed video: ${videoResponse.status}`);
           }

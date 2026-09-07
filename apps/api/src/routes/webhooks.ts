@@ -1,11 +1,60 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import Stripe from 'stripe';
-import { getDb, seedTenantAndApiKey, withRetry } from '../lib/db';
+import { randomUUID } from 'crypto';
+import { getDb, withTransaction } from '../lib/db';
 import { sendEmailNotice } from '../lib/email';
 import { sendErrorResponse, ErrorCodes } from '../lib/errors';
 import { AuthenticatedRequest, TenantState } from '../types';
 import { performanceMonitor } from '../lib/logger';
-import { redisConnection } from '../lib/redis';
+import { normalizeSubscriptionStatus } from '../lib/subscriptionStatus';
+
+function isExplicitTestBypass(): boolean {
+  // STRIPE_TESTING is never sufficient by itself. Production-like processes
+  // must always have a Stripe client, secret, raw body, and valid signature.
+  return process.env.NODE_ENV === 'test' && process.env.STRIPE_TESTING === 'true';
+}
+
+const EVENT_CLAIM_STALE_AFTER = '15 minutes';
+
+/**
+ * Claims a Stripe event durably. A completed claim is never replayed; an
+ * abandoned processing claim can be retried after its lease, while ordinary
+ * handler failures explicitly release their claim immediately.
+ */
+export async function claimStripeWebhookEvent(eventId: string): Promise<string | null> {
+  const claimToken = randomUUID();
+  const { pool } = getDb();
+  const result = await pool.query(
+    `INSERT INTO stripe_webhook_events (event_id, status, claim_token, processing_started_at)
+     VALUES ($1, 'processing', $2, NOW())
+     ON CONFLICT (event_id) DO UPDATE
+       SET status = 'processing', claim_token = EXCLUDED.claim_token,
+           processing_started_at = NOW(), completed_at = NULL
+       WHERE stripe_webhook_events.status = 'processing'
+         AND stripe_webhook_events.processing_started_at < NOW() - $3::interval
+     RETURNING claim_token`,
+    [eventId, claimToken, EVENT_CLAIM_STALE_AFTER],
+  );
+  return result.rows[0]?.claim_token === claimToken ? claimToken : null;
+}
+
+export async function completeStripeWebhookEvent(eventId: string, claimToken: string): Promise<void> {
+  const { pool } = getDb();
+  await pool.query(
+    `UPDATE stripe_webhook_events
+        SET status = 'completed', completed_at = NOW()
+      WHERE event_id = $1 AND claim_token = $2 AND status = 'processing'`,
+    [eventId, claimToken],
+  );
+}
+
+export async function releaseStripeWebhookEvent(eventId: string, claimToken: string): Promise<void> {
+  const { pool } = getDb();
+  await pool.query(
+    `DELETE FROM stripe_webhook_events WHERE event_id = $1 AND claim_token = $2 AND status = 'processing'`,
+    [eventId, claimToken],
+  );
+}
 
 export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | null, tenants: Map<string, TenantState>): void {
   app.post('/webhooks/stripe', {
@@ -16,7 +65,6 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
       hide: true, // Webhook endpoint, hide from public docs
       headers: {
         type: 'object',
-        required: ['stripe-signature'],
         properties: {
           'stripe-signature': {
             type: 'string',
@@ -51,24 +99,21 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
     const perfId = performanceMonitor.start('stripe_webhook', (req as AuthenticatedRequest).requestId);
     
     try {
-      const sig = req.headers['stripe-signature'] as string;
+      const sig = req.headers['stripe-signature'];
       const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
-      
-      const isTesting = process.env.STRIPE_TESTING === 'true' || process.env.NODE_ENV === 'development';
-      
-      if (!stripe || !webhookSecret) {
-        if (isTesting) {
-          req.log.warn('Testing mode: Processing webhook without Stripe signature verification');
-        } else {
-          return res.code(503).send({ success: false, error: ErrorCodes.STRIPE_UNCONFIGURED });
-        }
-      }
-      
       const rawBody = (req as AuthenticatedRequest).rawBody;
-      if (!rawBody) {
+      if (!Buffer.isBuffer(rawBody) || rawBody.length === 0) {
         return res.code(400).send({ success: false, error: 'missing_body' });
       }
-      
+
+      const isTesting = isExplicitTestBypass();
+      if (!isTesting && (!stripe || !webhookSecret)) {
+        return res.code(503).send({ success: false, error: ErrorCodes.STRIPE_UNCONFIGURED });
+      }
+      if (!isTesting && typeof sig !== 'string') {
+        return res.code(400).send({ success: false, error: 'missing_signature' });
+      }
+
       let event: Stripe.Event;
       
       if (isTesting) {
@@ -81,63 +126,174 @@ export function registerWebhookRoutes(app: FastifyInstance, stripe: Stripe | nul
         }
       } else {
         try {
-          event = stripe!.webhooks.constructEvent(rawBody, sig, webhookSecret);
+          event = stripe!.webhooks.constructEvent(rawBody, sig as string, webhookSecret);
         } catch (err) {
           req.log.error({ err }, 'Stripe signature verification failed');
           return res.code(400).send({ success: false, error: 'Invalid signature' });
         }
       }
 
-      // Handle invoice.payment_succeeded
-      if (event.type === 'invoice.payment_succeeded') {
-        await handleInvoicePaymentSucceeded(event, req, tenants);
+      const claimToken = await claimStripeWebhookEvent(event.id);
+      if (!claimToken) {
+        req.log.info({ eventId: event.id }, 'Ignoring replayed Stripe webhook event');
+        return res.send({ received: true });
       }
 
-      // Handle checkout.session.completed
-      // NOTE: This event is now primarily handled by Replit Developer Portal.
-      // Replit creates the customer, generates API key, sends email, then syncs to Render via /v1/sync/tenant
-      // This handler is kept for backward compatibility but should be deprioritized.
-      // In production with Replit, this webhook may not be received by Render.
-      if (event.type === 'checkout.session.completed') {
-        req.log.info({ 
-          eventId: event.id, 
-          eventType: event.type,
-          note: 'checkout.session.completed is now handled by Replit Developer Portal. This handler is for backward compatibility only.'
-        }, 'Received checkout.session.completed webhook (deprioritized - handled by Replit)');
-        
-        // Only process if explicitly enabled via environment variable
-        // This allows gradual migration and fallback if needed
-        if (process.env.ENABLE_RENDER_CHECKOUT_HANDLER === 'true') {
-          req.log.info('Processing checkout.session.completed (ENABLE_RENDER_CHECKOUT_HANDLER=true)');
-          await handleCheckoutSessionCompleted(event, req, tenants);
-        } else {
-          req.log.info('Skipping checkout.session.completed handler (handled by Replit Developer Portal)');
+      try {
+        // Handle invoice.payment_succeeded
+        if (event.type === 'invoice.payment_succeeded') {
+          await handleInvoicePaymentSucceeded(event, req, tenants);
         }
-      }
+
+        if (event.type === 'checkout.session.completed') {
+          req.log.info(
+            { eventId: event.id, eventType: event.type },
+            'Acknowledging checkout event without mutation; onboarding owns provisioning',
+          );
+        }
 
       // Handle invoice.payment_failed
-      if (event.type === 'invoice.payment_failed') {
-        await handleInvoicePaymentFailed(event, req, tenants);
-      }
+        if (event.type === 'invoice.payment_failed') {
+          await handleInvoicePaymentFailed(event, req, tenants);
+        }
 
       // Handle customer.subscription.deleted
-      if (event.type === 'customer.subscription.deleted') {
-        await handleSubscriptionDeleted(event, req, tenants);
-      }
+        if (event.type === 'customer.subscription.deleted') {
+          await handleSubscriptionDeleted(event, req, tenants);
+        }
 
       // Handle customer.subscription.updated
-      if (event.type === 'customer.subscription.updated') {
-        await handleSubscriptionUpdated(event, req, tenants);
+        if (event.type === 'customer.subscription.updated') {
+          await handleSubscriptionUpdated(event, req, tenants);
+        }
+        await completeStripeWebhookEvent(event.id, claimToken);
+        return res.send({ received: true });
+      } catch (error) {
+        await releaseStripeWebhookEvent(event.id, claimToken);
+        throw error;
       }
-
-      performanceMonitor.end(perfId);
-      return res.send({ received: true });
     } catch (error) {
       performanceMonitor.end(perfId);
       req.log.error({ error }, 'Webhook processing error');
       return sendErrorResponse(res, error instanceof Error ? error : new Error(String(error)));
     }
   });
+}
+
+interface StripeLifecycleMutation {
+  status: ReturnType<typeof normalizeSubscriptionStatus>;
+  active: boolean;
+  stripeCustomerId: string;
+  stripeSubscriptionId?: string | null;
+  clearStripeSubscriptionId?: boolean;
+  expiresAt?: Date | null;
+  graceUntil: Date | null;
+}
+
+interface AppliedStripeLifecycle {
+  tenantId: string;
+  applied: boolean;
+}
+
+/**
+ * Locks the tenant row and advances both its lifecycle and Stripe ordering
+ * cursor atomically. Stripe timestamps have one-second precision, so event ID
+ * provides a stable total order for distinct events created in the same second.
+ */
+export async function applyStripeLifecycleMutation(
+  event: Pick<Stripe.Event, 'id' | 'created'>,
+  mutation: StripeLifecycleMutation,
+): Promise<AppliedStripeLifecycle | null> {
+  if (!event.id || !Number.isSafeInteger(event.created) || event.created < 0) {
+    throw new Error('Stripe lifecycle event has invalid ordering metadata');
+  }
+
+  return withTransaction(async (client) => {
+    const lookup = mutation.stripeSubscriptionId
+      ? await client.query(
+        `SELECT id, stripe_event_created, stripe_event_id
+           FROM tenants
+          WHERE stripe_subscription_id = $1 OR stripe_customer_id = $2
+          ORDER BY CASE WHEN stripe_subscription_id = $1 THEN 0 ELSE 1 END
+          LIMIT 1 FOR UPDATE`,
+        [mutation.stripeSubscriptionId, mutation.stripeCustomerId],
+      )
+      : await client.query(
+        `SELECT id, stripe_event_created, stripe_event_id
+           FROM tenants WHERE stripe_customer_id = $1 LIMIT 1 FOR UPDATE`,
+        [mutation.stripeCustomerId],
+      );
+
+    if (lookup.rows.length === 0) return null;
+    const row = lookup.rows[0] as {
+      id: string;
+      stripe_event_created: string | number | null;
+      stripe_event_id: string | null;
+    };
+    const previousCreated = row.stripe_event_created === null ? null : Number(row.stripe_event_created);
+    const isStale = previousCreated !== null && (
+      event.created < previousCreated
+      || (event.created === previousCreated && event.id <= (row.stripe_event_id || ''))
+    );
+    if (isStale) return { tenantId: row.id, applied: false };
+
+    await client.query(
+      `UPDATE tenants
+          SET status = $1,
+              active = $2,
+              expires_at = CASE WHEN $3 THEN $4 ELSE expires_at END,
+              grace_until = $5,
+              stripe_subscription_id = CASE WHEN $6 THEN $7 ELSE stripe_subscription_id END,
+              stripe_event_created = $8,
+              stripe_event_id = $9
+        WHERE id = $10`,
+      [
+        mutation.status,
+        mutation.active,
+        mutation.expiresAt !== undefined,
+        mutation.expiresAt ?? null,
+        mutation.graceUntil,
+        mutation.stripeSubscriptionId !== undefined || mutation.clearStripeSubscriptionId === true,
+        mutation.clearStripeSubscriptionId ? null : mutation.stripeSubscriptionId ?? null,
+        event.created,
+        event.id,
+        row.id,
+      ],
+    );
+    return { tenantId: row.id, applied: true };
+  });
+}
+
+function updateCachedTenant(
+  tenants: Map<string, TenantState>,
+  tenantId: string,
+  active: boolean,
+  graceUntil: Date | null,
+  resetUsage = false,
+): void {
+  const state = tenants.get(tenantId) || {
+    active: false,
+    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
+  } as TenantState;
+  state.active = active;
+  state.graceUntil = graceUntil?.getTime();
+  if (resetUsage) {
+    state.usage.requests = 0;
+    state.usage.minutes = 0;
+    state.usage.jobs = 0;
+    state.usage.storage = 0;
+  }
+  tenants.set(tenantId, state);
+}
+
+export function invoicePeriodEnd(invoice: Stripe.Invoice): Date {
+  const periodEnds = invoice.lines?.data
+    .map((line) => line.period?.end)
+    .filter((end): end is number => Number.isSafeInteger(end) && end > 0) || [];
+  if (periodEnds.length === 0) {
+    throw new Error('invoice.payment_succeeded is missing an authoritative invoice line period end');
+  }
+  return new Date(Math.max(...periodEnds) * 1000);
 }
 
 async function handleInvoicePaymentSucceeded(
@@ -153,233 +309,28 @@ async function handleInvoicePaymentSucceeded(
     return;
   }
 
-  const { pool } = getDb();
-  const { rows } = await withRetry(async () => {
-    return await pool.query(
-      'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-      [stripeCustomerId]
-    );
-  }, 2, 100);
-  
-  if (rows.length === 0) {
+  const expiresAt = invoicePeriodEnd(invoice);
+  const stripeSubscriptionId = typeof invoice.subscription === 'string'
+    ? invoice.subscription
+    : undefined;
+  const result = await applyStripeLifecycleMutation(event, {
+    status: normalizeSubscriptionStatus('active'),
+    active: true,
+    stripeCustomerId,
+    stripeSubscriptionId,
+    expiresAt,
+    graceUntil: null,
+  });
+  if (!result) {
     req.log.warn({ stripeCustomerId }, 'Tenant not found for Stripe customer in invoice.payment_succeeded');
     return;
   }
-  
-  const tenantId = rows[0].id as string;
-  
-  // Update subscription expiration to 30 days from now (renewal)
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 30);
-  
-  // Update tenant status and expiration with retry
-  await withRetry(async () => {
-    await pool.query(
-      'UPDATE tenants SET status = $1, active = $2, expires_at = $3, grace_until = NULL WHERE id = $4',
-      ['active', true, expiresAt, tenantId]
-    );
-  }, 2, 100);
-  
-  // Optional: Rotate API key on renewal (uncomment to enable)
-  // const { createApiKey } = await import('../utils/keys');
-  // const { apiKey: newKey, hashed: newHash } = createApiKey();
-  // await pool.query(
-  //   'INSERT INTO api_keys (key_hash, tenant_id) VALUES ($1, $2)',
-  //   [newHash, tenantId]
-  // );
-  // const { sendApiKeyEmail } = await import('../utils/email');
-  // const tenantEmail = (await pool.query('SELECT name FROM tenants WHERE id = $1', [tenantId])).rows[0]?.name;
-  // if (tenantEmail) {
-  //   await sendApiKeyEmail(tenantEmail, newKey, { note: 'Your API key has been rotated due to subscription renewal.' });
-  // }
-  
-  const state = tenants.get(tenantId) || {
-    active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  
-  state.active = true;
-  state.graceUntil = undefined;
-  state.usage.requests = 0;
-  state.usage.minutes = 0;
-  state.usage.jobs = 0;
-  state.usage.storage = 0;
-  tenants.set(tenantId, state);
-  
-  req.log.info({ tenantId, stripeCustomerId, expiresAt }, 'Invoice payment succeeded, tenant activated and expiration updated');
-}
-
-async function handleCheckoutSessionCompleted(
-  event: Stripe.Event,
-  req: FastifyRequest,
-  tenants: Map<string, TenantState>
-): Promise<void> {
-  const session = event.data.object as Stripe.Checkout.Session;
-  const email = session.customer_details?.email;
-  
-  if (!email) {
-    req.log.warn('No email in checkout.session.completed event');
+  if (!result.applied) {
+    req.log.info({ eventId: event.id, tenantId: result.tenantId }, 'Ignoring stale Stripe lifecycle event');
     return;
   }
-
-  try {
-    const { createApiKey } = await import('../utils/keys');
-    const { apiKey, hashed } = createApiKey();
-
-    // Create tenant and API key in a transaction
-    let tenantId: string;
-    try {
-      const result = await seedTenantAndApiKey({
-        tenantName: email,
-        plan: 'standard',
-        apiKeyHash: hashed,
-      });
-      tenantId = result.tenantId;
-      
-      // Validate tenant was created successfully
-      if (!tenantId) {
-        throw new Error('Failed to create tenant: tenantId is null or undefined');
-      }
-      
-      // Verify tenant exists in database before proceeding
-      const { pool } = getDb();
-      const tenantCheck = await pool.query(
-        'SELECT id FROM tenants WHERE id = $1',
-        [tenantId]
-      );
-      
-      if (tenantCheck.rows.length === 0) {
-        throw new Error(`Invalid tenant_id: ${tenantId} - tenant not found in database`);
-      }
-      
-      req.log.info({ email, tenantId }, 'Tenant and API key created successfully');
-    } catch (dbError: any) {
-      // Check for foreign key violation
-      if (dbError?.code === '23503' || dbError?.message?.includes('foreign key')) {
-        req.log.error({ 
-          error: dbError, 
-          email, 
-          message: 'Foreign key violation - tenant_id is invalid' 
-        }, 'Database foreign key error when creating tenant/API key');
-        throw new Error(`Invalid tenant_id foreign key: ${dbError.message}`);
-      }
-      // Check for unique constraint violation (duplicate email)
-      if (dbError?.code === '23505' || dbError?.message?.includes('unique constraint')) {
-        req.log.warn({ email, error: dbError }, 'Tenant already exists, attempting to find existing tenant');
-        // Try to find existing tenant
-        const { pool } = getDb();
-        const existingTenant = await pool.query(
-          'SELECT id FROM tenants WHERE name = $1',
-          [email]
-        );
-        if (existingTenant.rows.length > 0) {
-          tenantId = existingTenant.rows[0].id;
-          // Create API key for existing tenant
-          await pool.query(
-            'INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2) ON CONFLICT (key_hash) DO NOTHING',
-            [hashed, tenantId]
-          );
-          req.log.info({ email, tenantId }, 'Using existing tenant, API key added');
-        } else {
-          throw new Error(`Failed to create or find tenant for email: ${email}`);
-        }
-      } else {
-        throw dbError;
-      }
-    }
-
-    const stripeCustomerId = typeof session.customer === 'string' ? session.customer : session.customer?.id || '';
-    const stripeSubscriptionId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id || '';
-    
-    // Set subscription expiration to 30 days from now (standard billing cycle)
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
-    
-    const { pool } = getDb();
-    
-    // Validate tenant_id again before updating
-    const tenantValidation = await pool.query(
-      'SELECT id FROM tenants WHERE id = $1',
-      [tenantId]
-    );
-    
-    if (tenantValidation.rows.length === 0) {
-      throw new Error(`Cannot update tenant: tenant_id ${tenantId} does not exist`);
-    }
-    
-    if (stripeCustomerId && stripeSubscriptionId) {
-      await pool.query(
-        'UPDATE tenants SET stripe_customer_id = $1, stripe_subscription_id = $2, status = $3, active = $4, expires_at = $5 WHERE id = $6',
-        [stripeCustomerId, stripeSubscriptionId, 'active', true, expiresAt, tenantId]
-      );
-    } else if (stripeCustomerId) {
-      await pool.query(
-        'UPDATE tenants SET stripe_customer_id = $1, status = $2, active = $3, expires_at = $4 WHERE id = $5',
-        [stripeCustomerId, 'active', true, expiresAt, tenantId]
-      );
-    } else if (stripeSubscriptionId) {
-      await pool.query(
-        'UPDATE tenants SET stripe_subscription_id = $1, status = $2, active = $3, expires_at = $4 WHERE id = $5',
-        [stripeSubscriptionId, 'active', true, expiresAt, tenantId]
-      );
-    } else {
-      // No Stripe IDs yet, but still set status and expiration
-      await pool.query(
-        'UPDATE tenants SET status = $1, active = $2, expires_at = $3 WHERE id = $4',
-        ['active', true, expiresAt, tenantId]
-      );
-    }
-
-    const state = tenants.get(tenantId) || {
-      active: false,
-      usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-    } as TenantState;
-    
-    state.active = true;
-    state.graceUntil = undefined;
-    tenants.set(tenantId, state);
-
-    req.log.info({ email, tenantId, apiKey }, 'New subscription created, API key generated');
-    
-    // Store API key in Redis for success page display (expires in 24 hours)
-    // Works for both test and live Stripe sessions
-    const sessionId = session.id;
-    if (sessionId) {
-      try {
-        await redisConnection.setex(`api_key:${sessionId}`, 86400, apiKey); // 24 hours = 86400 seconds
-        req.log.info({ sessionId }, 'API key stored in Redis for success page');
-      } catch (redisError) {
-        // Don't fail webhook if Redis storage fails - email will still be sent
-        req.log.warn({ 
-          sessionId, 
-          error: redisError instanceof Error ? redisError.message : String(redisError) 
-        }, 'Failed to store API key in Redis (will still send email)');
-      }
-    }
-    
-    // Send email with API key
-    try {
-      const { sendApiKeyEmail } = await import('../utils/email');
-      await sendApiKeyEmail(email, apiKey);
-      req.log.info({ email }, 'API key email sent successfully');
-    } catch (emailError) {
-      // Log the API key prominently if email fails so it can be retrieved from logs
-      req.log.error({ 
-        email, 
-        apiKey, 
-        error: emailError instanceof Error ? emailError.message : String(emailError) 
-      }, 'CRITICAL: Failed to send API key email - API key logged below');
-      req.log.warn({ apiKey, email }, 'API KEY FOR MANUAL RETRIEVAL (email failed)');
-    }
-  } catch (error) {
-    req.log.error({ 
-      error, 
-      email,
-      errorCode: (error as any)?.code,
-      errorMessage: error instanceof Error ? error.message : String(error)
-    }, 'Failed to create tenant and API key for new subscription');
-    throw error;
-  }
+  updateCachedTenant(tenants, result.tenantId, true, null, true);
+  req.log.info({ tenantId: result.tenantId, stripeCustomerId, expiresAt }, 'Invoice payment succeeded, tenant activated and expiration updated');
 }
 
 async function handleInvoicePaymentFailed(
@@ -396,47 +347,23 @@ async function handleInvoicePaymentFailed(
     return;
   }
 
-  const { pool } = getDb();
-  const { rows } = await pool.query(
-    'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-    [stripeCustomerId]
-  );
-  
-  if (rows.length === 0) {
-    req.log.warn({ stripeCustomerId }, 'Tenant not found for Stripe customer in invoice.payment_failed');
-    return;
-  }
-  
-  const tenantId = rows[0].id as string;
-  
-  // Update subscription ID if provided
-  if (stripeSubscriptionId) {
-    await pool.query(
-      'UPDATE tenants SET stripe_subscription_id = $1 WHERE id = $2',
-      [stripeSubscriptionId, tenantId]
-    );
-  }
-  
-  // Deactivate tenant and mark as inactive (grace period allows temporary access)
   const graceDays = parseInt(process.env.GRACE_DAYS || '7', 10);
   const graceUntil = new Date();
   graceUntil.setDate(graceUntil.getDate() + graceDays);
-  
-  await pool.query(
-    'UPDATE tenants SET active = false, status = $1, grace_until = $2 WHERE id = $3',
-    ['inactive', graceUntil, tenantId]
-  );
-  
-  const state = tenants.get(tenantId) || {
+  const result = await applyStripeLifecycleMutation(event, {
+    status: normalizeSubscriptionStatus('past_due'),
     active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  
-  state.active = false;
-  state.graceUntil = graceUntil.getTime();
-  tenants.set(tenantId, state);
-  
-  req.log.warn({ tenantId, graceUntil }, 'Payment failed - entered grace period');
+    stripeCustomerId,
+    stripeSubscriptionId,
+    graceUntil,
+  });
+  if (!result) {
+    req.log.warn({ stripeCustomerId }, 'Tenant not found for Stripe customer in invoice.payment_failed');
+    return;
+  }
+  if (!result.applied) return;
+  updateCachedTenant(tenants, result.tenantId, false, graceUntil);
+  req.log.warn({ tenantId: result.tenantId, graceUntil }, 'Payment failed - entered grace period');
   const email = invoice.customer_email || process.env.NOTIFY_FALLBACK_EMAIL || '';
   if (email) {
     await sendEmailNotice(
@@ -461,59 +388,25 @@ async function handleSubscriptionDeleted(
     return;
   }
 
-  const { pool } = getDb();
-  
-  // Find tenant by subscription ID first, fallback to customer ID
-  let rows: Array<{ id: string }>;
-  if (stripeSubscriptionId) {
-    const result = await pool.query(
-      'SELECT id FROM tenants WHERE stripe_subscription_id = $1',
-      [stripeSubscriptionId]
-    );
-    rows = result.rows;
-    
-    // Fallback to customer ID if not found by subscription ID
-    if (rows.length === 0 && stripeCustomerId) {
-      const fallbackResult = await pool.query(
-        'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-        [stripeCustomerId]
-      );
-      rows = fallbackResult.rows;
-    }
-  } else if (stripeCustomerId) {
-    const result = await pool.query(
-      'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-      [stripeCustomerId]
-    );
-    rows = result.rows;
-  } else {
-    req.log.warn('No subscription or customer ID in customer.subscription.deleted event');
-    return;
-  }
-  
-  if (rows.length === 0) {
+  const authoritativeEnd = subscription.ended_at
+    || subscription.canceled_at
+    || subscription.current_period_end;
+  const result = await applyStripeLifecycleMutation(event, {
+    status: normalizeSubscriptionStatus('canceled'),
+    active: false,
+    stripeCustomerId,
+    stripeSubscriptionId,
+    clearStripeSubscriptionId: true,
+    expiresAt: authoritativeEnd ? new Date(authoritativeEnd * 1000) : undefined,
+    graceUntil: null,
+  });
+  if (!result) {
     req.log.warn({ stripeSubscriptionId, stripeCustomerId }, 'Tenant not found for Stripe subscription in customer.subscription.deleted');
     return;
   }
-  
-  const tenantId = rows[0].id as string;
-  
-  // Deactivate tenant, mark as expired, and clear subscription ID
-  await pool.query(
-    'UPDATE tenants SET active = false, status = $1, stripe_subscription_id = NULL WHERE id = $2',
-    ['expired', tenantId]
-  );
-  
-  const state = tenants.get(tenantId) || {
-    active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  
-  state.active = false;
-  state.graceUntil = undefined;
-  tenants.set(tenantId, state);
-  
-  req.log.warn({ tenantId, stripeSubscriptionId }, 'Subscription deleted - tenant deactivated and marked as expired');
+  if (!result.applied) return;
+  updateCachedTenant(tenants, result.tenantId, false, null);
+  req.log.warn({ tenantId: result.tenantId, stripeSubscriptionId }, 'Subscription deleted - tenant deactivated and marked as expired');
   
   // Send notification email - get email from customer if available
   // Note: We may need to fetch customer details from Stripe if email is needed
@@ -523,7 +416,7 @@ async function handleSubscriptionDeleted(
     await sendEmailNotice(
       email,
       'Sinna: Subscription Cancelled',
-      `Subscription ${stripeSubscriptionId} has been cancelled. Tenant ${tenantId} deactivated.`
+      `Subscription ${stripeSubscriptionId} has been cancelled. Tenant ${result.tenantId} deactivated.`
     );
   }
 }
@@ -543,94 +436,37 @@ async function handleSubscriptionUpdated(
     return;
   }
 
-  const { pool } = getDb();
-  
-  // Find tenant by subscription ID first, fallback to customer ID
-  let rows: Array<{ id: string }>;
-  if (stripeSubscriptionId) {
-    const result = await pool.query(
-      'SELECT id FROM tenants WHERE stripe_subscription_id = $1',
-      [stripeSubscriptionId]
-    );
-    rows = result.rows;
-    
-    // Fallback to customer ID if not found by subscription ID
-    if (rows.length === 0 && stripeCustomerId) {
-      const fallbackResult = await pool.query(
-        'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-        [stripeCustomerId]
-      );
-      rows = fallbackResult.rows;
-      
-      // Update subscription ID if found by customer ID
-      if (rows.length > 0) {
-        await pool.query(
-          'UPDATE tenants SET stripe_subscription_id = $1 WHERE id = $2',
-          [stripeSubscriptionId, rows[0].id]
-        );
-      }
-    }
-  } else if (stripeCustomerId) {
-    const result = await pool.query(
-      'SELECT id FROM tenants WHERE stripe_customer_id = $1',
-      [stripeCustomerId]
-    );
-    rows = result.rows;
-  } else {
+  if (!stripeCustomerId) {
     req.log.warn('No subscription or customer ID in customer.subscription.updated event');
     return;
   }
-  
-  if (rows.length === 0) {
+  const tenantStatus = normalizeSubscriptionStatus(status);
+  const isActive = tenantStatus === 'active';
+  const periodEnd = subscription.current_period_end;
+  if (isActive && (!Number.isSafeInteger(periodEnd) || periodEnd <= 0)) {
+    throw new Error('Entitled subscription update is missing current_period_end');
+  }
+  const result = await applyStripeLifecycleMutation(event, {
+    status: tenantStatus,
+    active: isActive,
+    stripeCustomerId,
+    stripeSubscriptionId,
+    expiresAt: periodEnd ? new Date(periodEnd * 1000) : undefined,
+    graceUntil: null,
+  });
+  if (!result) {
     req.log.warn({ stripeSubscriptionId, stripeCustomerId }, 'Tenant not found for Stripe subscription in customer.subscription.updated');
     return;
   }
-  
-  const tenantId = rows[0].id as string;
-  
-  // Update tenant status based on subscription status
-  const isActive = status === 'active' || status === 'trialing';
-  let tenantStatus: 'active' | 'inactive' | 'expired' = isActive ? 'active' : 'inactive';
-  let expiresAt: Date | null = null;
-  
-  // If subscription is active, extend expiration by 30 days
-  if (isActive) {
-    expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30);
-  } else if (status === 'canceled' || status === 'unpaid') {
-    tenantStatus = 'expired';
-  }
-  
-  if (expiresAt) {
-    await pool.query(
-      'UPDATE tenants SET active = $1, status = $2, stripe_subscription_id = $3, expires_at = $4 WHERE id = $5',
-      [isActive, tenantStatus, stripeSubscriptionId, expiresAt, tenantId]
-    );
-  } else {
-    await pool.query(
-      'UPDATE tenants SET active = $1, status = $2, stripe_subscription_id = $3 WHERE id = $4',
-      [isActive, tenantStatus, stripeSubscriptionId, tenantId]
-    );
-  }
-  
-  const state = tenants.get(tenantId) || {
-    active: false,
-    usage: { requests: 0, minutes: 0, jobs: 0, storage: 0, cap: 100000 },
-  } as TenantState;
-  
-  state.active = isActive;
-  if (!isActive) {
-    state.graceUntil = undefined;
-  }
-  tenants.set(tenantId, state);
-  
-  req.log.info({ tenantId, stripeSubscriptionId, status }, 'Subscription updated - tenant status changed');
+  if (!result.applied) return;
+  updateCachedTenant(tenants, result.tenantId, isActive, null);
+  req.log.info({ tenantId: result.tenantId, stripeSubscriptionId, status }, 'Subscription updated - tenant status changed');
   
   // Send notification for status changes
   // Note: To get customer email, we would need to fetch customer from Stripe
   // For now, log the status change - email notifications can be handled via Stripe's built-in emails
   if (status === 'past_due' || status === 'unpaid') {
-    req.log.warn({ tenantId, stripeSubscriptionId, status }, 'Subscription status issue - tenant may need attention');
+    req.log.warn({ tenantId: result.tenantId, stripeSubscriptionId, status }, 'Subscription status issue - tenant may need attention');
     // Stripe typically sends its own emails for payment issues, so we don't duplicate here
   }
 }

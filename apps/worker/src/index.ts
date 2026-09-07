@@ -12,6 +12,7 @@ import { uploadToR2 } from './lib/r2';
 import IORedis from 'ioredis';
 import OpenAI from 'openai';
 import { createVideoTransformWorker } from './videoTransformWorker';
+import { downloadExternalMedia } from './lib/ssrf';
 
 /** Wait for Redis client to be ready before passing to BullMQ (required for blocking ops). */
 function waitForReady(client: IORedis, timeoutMs = 15000): Promise<void> {
@@ -115,6 +116,20 @@ async function startWorkers() {
     if (!apiKey) {
       return { segments: [{ start: 0, end: 5, text: 'Transcript unavailable (no ASSEMBLYAI_API_KEY)' }] };
     }
+    // Upload pinned bytes to AssemblyAI. Never ask the provider to dereference
+    // the original, user-controlled source URL.
+    const source = await downloadExternalMedia(audioUrl);
+    const mediaUpload = await fetch('https://api.assemblyai.com/v2/upload', {
+      method: 'POST',
+      headers: { 'Authorization': apiKey, 'Content-Type': source.contentType },
+      body: new Uint8Array(source.body),
+    });
+    if (!mediaUpload.ok) {
+      throw new Error(`assemblyai_upload_failed_${mediaUpload.status}`);
+    }
+    const uploaded = await mediaUpload.json();
+    const uploadedAudioUrl = uploaded.upload_url as string;
+    if (!uploadedAudioUrl) throw new Error('assemblyai_upload_failed_no_url');
     // Map short language codes to AssemblyAI format
     const langMap: Record<string, string> = { en: 'en_us', es: 'es', fr: 'fr', de: 'de', pt: 'pt', it: 'it', nl: 'nl', ja: 'ja', zh: 'zh', ko: 'ko' };
     const langCode = opts.language ? (langMap[opts.language] || opts.language) : 'en_us';
@@ -123,7 +138,7 @@ async function startWorkers() {
       method: 'POST',
       headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        audio_url: audioUrl,
+        audio_url: uploadedAudioUrl,
         language_code: langCode,
         speech_models: ['universal-3-pro'],
       }),
@@ -331,6 +346,8 @@ async function startWorkers() {
         // Use Cloudinary for video analysis if CLOUDINARY_URL is available
         const cloudinaryUrl = process.env.CLOUDINARY_URL;
         if (cloudinaryUrl) {
+          // Cloudinary receives uploaded bytes, not an untrusted remote URL.
+          const source = await downloadExternalMedia(videoUrl);
           // Extract credentials from CLOUDINARY_URL: cloudinary://api_key:api_secret@cloud_name
           const match = cloudinaryUrl.match(/cloudinary:\/\/(\d+):([\w-]+)@([\w-]+)/);
           if (match) {
@@ -347,7 +364,7 @@ async function startWorkers() {
               
               const uploadUrl = `https://api.cloudinary.com/v1_1/${cloudName}/video/upload`;
               const uploadForm = new URLSearchParams();
-              uploadForm.append('file', videoUrl);
+              uploadForm.append('file', `data:${source.contentType};base64,${source.body.toString('base64')}`);
               uploadForm.append('api_key', apiKey);
               uploadForm.append('timestamp', timestamp);
               uploadForm.append('signature', uploadSignature);

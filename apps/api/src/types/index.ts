@@ -74,6 +74,7 @@ export interface ColorJobResult {
 // Job bundle type
 export interface JobBundle {
   id: string;
+  tenantId: string;
   steps: {
     captions: string;
     ad: string;

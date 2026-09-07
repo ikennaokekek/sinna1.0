@@ -12,12 +12,17 @@ import { AuthenticatedRequest, ApiResponse, JobBundle, Artifact, JobStatusRespon
 import { performanceMonitor } from '../lib/logger';
 import { redisConnection } from '../lib/redis';
 import IORedis from 'ioredis';
+import { UnsafeUrlError, validateExternalHttpUrl } from '../lib/ssrf';
 
 interface Queues {
   captions: Queue;
   ad: Queue;
   color: Queue;
   videoTransform: Queue;
+}
+
+export function isTenantArtifactKey(key: string, tenantId: string): boolean {
+  return key.startsWith(`artifacts/${tenantId}/`);
 }
 
 // Built-in preset defaults — used when config/presets.json cannot be loaded from disk
@@ -135,6 +140,15 @@ export function registerJobRoutes(
       
       if (!tenantId) {
         return res.code(401).send({ success: false, error: ErrorCodes.UNAUTHORIZED });
+      }
+
+      try {
+        await validateExternalHttpUrl(body.source_url);
+      } catch (error) {
+        if (error instanceof UnsafeUrlError) {
+          return res.code(400).send({ success: false, error: ErrorCodes.VALIDATION_ERROR, details: [{ message: error.message }] });
+        }
+        throw error;
       }
 
       // Usage gate: count one job before enqueue; 429 if exceeding caps
@@ -299,6 +313,7 @@ export function registerJobRoutes(
 
         jobBundle = {
           id: String(captionJob.id!),
+          tenantId,
           steps: {
             captions: String(captionJob.id!),
             ad: String(adJob.id!),
@@ -521,6 +536,17 @@ export function registerJobRoutes(
         bundle.steps.videoTransform ? queues.videoTransform.getJob(bundle.steps.videoTransform) : Promise.resolve(null),
       ]);
 
+      // Idempotency entries are discoverable by job ID. Never disclose the
+      // status or mint an artifact URL unless both the stored bundle and each
+      // underlying job belong to the authenticated tenant. The job-data check
+      // also protects legacy cache entries created before tenantId was added.
+      const requiredJobs = [c, a, cl, ...(bundle.steps.videoTransform ? [vt] : [])];
+      const ownedByTenant = bundle.tenantId === tenantId &&
+        requiredJobs.every((job) => job && (job.data as { tenantId?: string }).tenantId === tenantId);
+      if (!ownedByTenant) {
+        return res.code(404).send({ success: false, error: ErrorCodes.NOT_FOUND });
+      }
+
       // Check job completion status (await promises)
       const cCompleted = c ? await c.isCompleted() : false;
       const cFailed = c ? !!c.failedReason : false;
@@ -583,17 +609,21 @@ export function registerJobRoutes(
         failuresTotal.labels({ type: 'job' }).inc();
       }
 
+      // Artifact keys are tenant namespaced. Validate the namespace immediately
+      // before signing, rather than trusting a worker return value.
+      const ownedArtifactKey = (key: string) => isTenantArtifactKey(key, tenantId);
+
       // Generate signed URLs for completed artifacts
-      if (status.captions?.status === 'completed' && status.captions.artifactKey) {
+      if (status.captions?.status === 'completed' && status.captions.artifactKey && ownedArtifactKey(status.captions.artifactKey)) {
         status.captions.url = await getSignedGetUrl(status.captions.artifactKey);
       }
-      if (status.ad?.status === 'completed' && status.ad.artifactKey) {
+      if (status.ad?.status === 'completed' && status.ad.artifactKey && ownedArtifactKey(status.ad.artifactKey)) {
         status.ad.url = await getSignedGetUrl(status.ad.artifactKey);
       }
-      if (status.color?.status === 'completed' && status.color.artifactKey) {
+      if (status.color?.status === 'completed' && status.color.artifactKey && ownedArtifactKey(status.color.artifactKey)) {
         status.color.url = await getSignedGetUrl(status.color.artifactKey);
       }
-      if (status.videoTransform?.status === 'completed' && status.videoTransform.artifactKey) {
+      if (status.videoTransform?.status === 'completed' && status.videoTransform.artifactKey && ownedArtifactKey(status.videoTransform.artifactKey)) {
         status.videoTransform.url = await getSignedGetUrl(status.videoTransform.artifactKey);
       }
 

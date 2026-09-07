@@ -4,7 +4,7 @@ import Stripe from 'stripe';
 // Mock dependencies
 vi.mock('../lib/db', () => ({
   getDb: vi.fn(),
-  seedTenantAndApiKey: vi.fn(),
+  withRetry: vi.fn(),
 }));
 
 vi.mock('../lib/email', () => ({
@@ -16,7 +16,7 @@ describe('Stripe Webhook Handlers', () => {
     vi.clearAllMocks();
   });
 
-  it('should handle checkout.session.completed event', async () => {
+  it('represents checkout.session.completed as an onboarding-owned event', async () => {
     const mockEvent: Stripe.Event = {
       id: 'evt_test',
       object: 'event',
@@ -38,7 +38,6 @@ describe('Stripe Webhook Handlers', () => {
       },
     };
 
-    // Test structure - actual implementation would require full Fastify setup
     expect(mockEvent.type).toBe('checkout.session.completed');
     expect(mockEvent.data.object.customer_details?.email).toBe('test@example.com');
   });

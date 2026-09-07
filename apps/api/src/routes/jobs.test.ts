@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
+import { isTenantArtifactKey } from './jobs';
 
 describe('Job Route Validation', () => {
   it('should validate job creation request', () => {
@@ -51,6 +52,13 @@ describe('Job Status Response', () => {
     expect(status.captions).toBe('completed');
     expect(status.ad).toBe('pending');
     expect(status.color).toBe('failed');
+  });
+});
+
+describe('Signed artifact ownership', () => {
+  it('does not accept a cross-tenant artifact key', () => {
+    expect(isTenantArtifactKey('artifacts/tenant-a/42.vtt', 'tenant-a')).toBe(true);
+    expect(isTenantArtifactKey('artifacts/tenant-b/42.vtt', 'tenant-a')).toBe(false);
   });
 });
 
