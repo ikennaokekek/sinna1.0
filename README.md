@@ -5,9 +5,9 @@ Advanced accessibility features API for streaming platforms worldwide. Sinna pro
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 20 LTS
-- pnpm 9+
-- PostgreSQL 15+
+- Node.js 20–24 (CI pins Node.js 20 LTS)
+- pnpm 10 (the exact version is pinned in `package.json`)
+- PostgreSQL 17+
 - Redis 7+
 - Cloudflare R2 storage account
 - Optional: Cloudinary for video transforms and frame analysis
@@ -42,11 +42,29 @@ pnpm dev
 pnpm dev:worker
 ```
 
-If you want to initialize the schema before running the API locally, use:
+### Provider-neutral clean-clone verification
+
+`pnpm verify:offline` performs the frozen install, build, and offline unit
+tests. `pnpm verify:clean-clone` additionally starts/health-checks the API
+and starts the worker. It uses disposable
+local PostgreSQL and Redis processes only—no Docker, deployment configuration,
+cloud credentials, or live services. Install PostgreSQL server/client tools
+(`initdb`, `pg_ctl`, `psql`) and `redis-server` locally before running it.
+
+To initialize a new, empty disposable/local database, use bootstrap followed by
+normal future migrations:
 
 ```bash
-pnpm -C apps/api run migrate
+pnpm migrate:bootstrap
+pnpm migrate:apply
+pnpm migrate:verify
 ```
+
+`bootstrap` is refused if a ledger, public user object, or unknown schema is
+already present. For an existing deployment already matching the 001–008
+historical fingerprint, use `pnpm migrate:baseline` instead; baseline is
+read-only until it atomically records its ledger and never executes historical
+SQL.
 
 ## 📋 Features
 

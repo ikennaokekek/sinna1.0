@@ -112,13 +112,11 @@ describe('Stripe webhook signature verification', () => {
     expect(JSON.parse(res.body)).toEqual({ received: true });
   });
 
-  it('never provisions, rotates, or emails a key even when the legacy flag is set', async () => {
-    const previous = process.env.ENABLE_RENDER_CHECKOUT_HANDLER;
-    process.env.ENABLE_RENDER_CHECKOUT_HANDLER = 'true';
+  it('never provisions, rotates, or emails a key for checkout completion', async () => {
     dbQuery.mockClear();
     createApiKey.mockClear();
     sendApiKeyEmail.mockClear();
-    const payload = JSON.stringify(checkoutCompletedEvent('evt_checkout_legacy_flag'));
+    const payload = JSON.stringify(checkoutCompletedEvent('evt_checkout_no_provisioning'));
     const signature = stripe.webhooks.generateTestHeaderString({ payload, secret: webhookSecret });
 
     const res = await app.inject({
@@ -137,8 +135,6 @@ describe('Stripe webhook signature verification', () => {
     expect(dbQuery.mock.calls.every(([sql]) => String(sql).includes('stripe_webhook_events'))).toBe(true);
     expect(dbQuery.mock.calls.some(([sql]) => String(sql).includes("status = 'completed'"))).toBe(true);
 
-    if (previous === undefined) delete process.env.ENABLE_RENDER_CHECKOUT_HANDLER;
-    else process.env.ENABLE_RENDER_CHECKOUT_HANDLER = previous;
   });
 
   it('returns 400 when Stripe-Signature was signed with a different secret', async () => {

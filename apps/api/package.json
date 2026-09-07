@@ -12,7 +12,8 @@
     "migrate": "node dist/scripts/migrate.js",
     "migrate:status": "pnpm migrate status",
     "migrate:verify": "pnpm migrate verify",
-    "migrate:baseline": "pnpm migrate baseline",
+    "migrate:baseline": "pnpm migrate baseline --through 008 --confirm-baseline",
+    "migrate:bootstrap": "pnpm migrate bootstrap",
     "migrate:apply": "pnpm migrate apply",
     "test:migrate:integration": "vitest run src/lib/migrationLedger.integration.test.ts",
     "seed": "node dist/scripts/seed.js"

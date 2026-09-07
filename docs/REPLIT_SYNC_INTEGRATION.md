@@ -54,17 +54,17 @@ The Render backend has been updated to support a new architecture where **Replit
 
 ### `POST /v1/sync/tenant`
 
-**Purpose:** Sync tenant and API key data from Replit to Render backend.
+**Purpose:** Sync tenant and API key data from the onboarding service to SINNA Core.
 
 **Security:**
 - Rate limited: 10 requests per minute per IP
-- Origin validation: Shared secret (`REPLIT_SYNC_SECRET`) or IP allowlist (`REPLIT_IP_ALLOWLIST`)
+- Origin validation: required shared secret (`REPLIT_SYNC_SECRET`); proxy/IP headers and allowlists are not caller authentication
 - Bypasses standard API key auth (has its own security)
 
 **Request Headers:**
 ```
 Content-Type: application/json
-X-Sync-Secret: <shared_secret> (if REPLIT_SYNC_SECRET is configured)
+X-Sync-Secret: <ONBOARDING_SYNC_SHARED_SECRET>
 ```
 
 **Request Body:**
@@ -125,12 +125,12 @@ X-Sync-Secret: <shared_secret> (if REPLIT_SYNC_SECRET is configured)
 
 ### Environment Variables
 
-Add these to your Render environment variables:
+Add this to the encrypted environment configuration for both services:
 
 #### Option 1: Shared Secret (Recommended)
 
 ```bash
-REPLIT_SYNC_SECRET=your_secure_random_hex_string_here
+REPLIT_SYNC_SECRET=<ONBOARDING_SYNC_SHARED_SECRET>
 ```
 
 Generate with:
@@ -138,38 +138,19 @@ Generate with:
 openssl rand -hex 32
 ```
 
-Replit must send this secret in the `X-Sync-Secret` header.
-
-#### Option 2: IP Allowlist
-
-```bash
-REPLIT_IP_ALLOWLIST=1.2.3.4,5.6.7.8
-```
-
-Comma-separated list of Replit server IP addresses.
-
-#### Webhook Handler Control
-
-```bash
-ENABLE_RENDER_CHECKOUT_HANDLER=false
-```
-
-- `false` (default): Replit handles checkout, Render only syncs
-- `true`: Enable Render's checkout handler for backward compatibility
+The onboarding service must send this secret in the `X-Sync-Secret` header.
 
 ## Webhook Handler Changes
 
-The `checkout.session.completed` webhook handler has been **deprioritized**:
+The `checkout.session.completed` webhook handler is intentionally acknowledgement-only:
 
 - ✅ Still receives webhook events
-- ✅ Logs the event for monitoring
-- ⚠️ Only processes if `ENABLE_RENDER_CHECKOUT_HANDLER=true`
-- 📝 Default behavior: Skip processing (handled by Replit)
+- ✅ Authenticates and durably acknowledges the event
+- ✅ Does not provision a tenant, rotate/create an API key, or send a key email
+- 📝 Onboarding owns provisioning and calls the authenticated sync endpoint
 
-This allows:
-- Gradual migration
-- Fallback if needed
-- Monitoring of webhook delivery
+The event remains visible for delivery monitoring without granting Core a second
+provisioning path.
 
 ## Database Schema
 
@@ -283,9 +264,8 @@ SELECT * FROM api_keys WHERE tenant_id = '550e8400-e29b-41d4-a716-446655440000';
 
 ## Migration Checklist
 
-- [ ] Add `REPLIT_SYNC_SECRET` or `REPLIT_IP_ALLOWLIST` to Render environment
-- [ ] Set `ENABLE_RENDER_CHECKOUT_HANDLER=false` (default)
-- [ ] Configure Replit to call `POST /v1/sync/tenant` after checkout
+- [ ] Add `REPLIT_SYNC_SECRET` to both services' encrypted environment configuration
+- [ ] Configure the onboarding service to call `POST /v1/sync/tenant` after provisioning
 - [ ] Test sync endpoint with sample payload
 - [ ] Monitor logs for sync operations
 - [ ] Verify tenants and API keys are created correctly

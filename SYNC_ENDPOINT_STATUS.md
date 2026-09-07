@@ -18,8 +18,7 @@ The `/v1/sync/tenant` endpoint is **already implemented and registered** in your
 ## ✅ Current Configuration
 
 ### Security
-- ✅ **Shared Secret** (Option 1): `REPLIT_SYNC_SECRET` environment variable
-- ✅ **IP Allowlist** (Option 2): `REPLIT_IP_ALLOWLIST` environment variable
+- ✅ **Shared Secret**: `REPLIT_SYNC_SECRET` environment variable
 - ✅ **Rate Limiting:** 10 requests per minute per IP
 - ✅ **Input Validation:** Zod schema validates all fields
 
@@ -34,13 +33,13 @@ The `/v1/sync/tenant` endpoint is **already implemented and registered** in your
 
 ## 🔧 Configuration Required
 
-### Option 1: Shared Secret (Recommended)
+### Shared Secret
 
-**In Render Dashboard → Environment:**
+**In your encrypted environment configuration:**
 
 Add:
 ```
-REPLIT_SYNC_SECRET=your_secure_random_hex_string_here
+REPLIT_SYNC_SECRET=<ONBOARDING_SYNC_SHARED_SECRET>
 ```
 
 **Generate secret:**
@@ -48,23 +47,10 @@ REPLIT_SYNC_SECRET=your_secure_random_hex_string_here
 openssl rand -hex 32
 ```
 
-**Replit must send this in header:**
+**The onboarding service must send this header:**
 ```
-X-Sync-Secret: your_secure_random_hex_string_here
+X-Sync-Secret: <ONBOARDING_SYNC_SHARED_SECRET>
 ```
-
----
-
-### Option 2: IP Allowlist
-
-**In Render Dashboard → Environment:**
-
-Add:
-```
-REPLIT_IP_ALLOWLIST=1.2.3.4,5.6.7.8
-```
-
-(Comma-separated list of Replit server IP addresses)
 
 ---
 
@@ -143,9 +129,8 @@ curl -X POST https://sinna1-0.onrender.com/v1/sync/tenant \
 ### Check Render Logs
 
 Search for:
-- `"Received tenant sync request from Replit"`
-- `"Tenant sync completed successfully"`
-- `"Sync request rejected: invalid origin"`
+- `"Tenant sync completed"`
+- `"Sync request rejected: unauthorized service"`
 
 ---
 
@@ -154,22 +139,21 @@ Search for:
 - [x] Endpoint exists (`/v1/sync/tenant`)
 - [x] Registered in app
 - [x] Bypasses API key auth
-- [x] Has security (shared secret or IP allowlist)
+- [x] Has shared-secret authentication
 - [x] Has rate limiting
-- [ ] `REPLIT_SYNC_SECRET` configured in Render (if using shared secret)
-- [ ] `REPLIT_IP_ALLOWLIST` configured in Render (if using IP allowlist)
-- [ ] Replit configured to call this endpoint after checkout
+- [ ] `REPLIT_SYNC_SECRET` configured in both services' encrypted environment configuration
+- [ ] Onboarding configured to call this endpoint after provisioning
 
 ---
 
 ## 🚀 Next Steps
 
-1. **Configure security** in Render:
-   - Add `REPLIT_SYNC_SECRET` OR `REPLIT_IP_ALLOWLIST`
+1. **Configure security**:
+    - Add the same `REPLIT_SYNC_SECRET` to Core and the onboarding service
    
-2. **Configure Replit** to:
-   - Call `/v1/sync/tenant` after checkout
-   - Send `X-Sync-Secret` header (if using shared secret)
+2. **Configure the onboarding service** to:
+    - Call `/v1/sync/tenant` after provisioning
+    - Send the `X-Sync-Secret` header
    - Include all required fields in payload
 
 3. **Test the endpoint**:

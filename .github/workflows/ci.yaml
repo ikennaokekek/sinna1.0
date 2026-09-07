@@ -21,7 +21,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10.26.1
 
       - uses: actions/setup-node@v4
         with:
@@ -52,7 +52,7 @@ jobs:
       STRIPE_WEBHOOK_SECRET: whsec_ci_placeholder
     services:
       postgres:
-        image: postgres:15
+        image: postgres:17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -79,7 +79,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10.26.1
 
       - uses: actions/setup-node@v4
         with:
@@ -95,8 +95,14 @@ jobs:
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
-      - name: Run DB migrations
-        run: pnpm -C apps/api run migrate
+      - name: Bootstrap and verify fresh DB migrations
+        run: |
+          set -euo pipefail
+          # Bootstrap alone may execute 001-008, and only on this empty
+          # disposable database. Apply then handles 009+.
+          pnpm migrate:bootstrap
+          pnpm migrate:apply
+          pnpm migrate:verify
 
       - name: Seed CI tenant and API key
         run: |
@@ -188,7 +194,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10.26.1
 
       - uses: actions/setup-node@v4
         with:

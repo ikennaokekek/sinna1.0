@@ -72,7 +72,7 @@ All 5 webhook handlers implemented:
 
 ## 📋 Post-Deployment Steps
 
-1. **Run Migration**: Migration 004 will run automatically on next deploy (if `RUN_MIGRATIONS_ON_BOOT=1`)
+1. **Run Migration**: Run the required migration explicitly against the target database before or as a controlled deployment step. Application startup does not run migrations.
 
 2. **Verify Stripe Webhooks**: 
    - Check Stripe Dashboard → Webhooks
@@ -80,10 +80,10 @@ All 5 webhook handlers implemented:
    - Verify all 5 events are selected
 
 3. **Test Flow**:
-   - Complete a test checkout
-   - Verify API key email received
-   - Test API key works: `curl -H "X-API-Key: sk_live_xxx" https://sinna.site/health`
-   - Verify expiration date set correctly in database
+    - Complete a test checkout through the onboarding service
+    - Verify onboarding provisions and delivers the tenant API key, then syncs Core
+    - Verify the synced API key works without placing it in logs or documentation
+    - Verify lifecycle updates use the tenant associated by onboarding
 
 ---
 

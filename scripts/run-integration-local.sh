@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Spin up Postgres + Redis in Docker, migrate, seed CI API key, run API + minimal workers,
+# Spin up Postgres + Redis in Docker, bootstrap/verify migrations, seed CI API key, run API + minimal workers,
 # then run pnpm test:integration (and optionally Playwright E2E).
 #
 # Prerequisites: Docker daemon running, pnpm install already done.
@@ -47,7 +47,7 @@ docker run -d --name sinna-it-pg \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=postgres \
   -p "${PG_PORT}:5432" \
-  postgres:15 >/dev/null
+  postgres:17 >/dev/null
 docker run -d --name sinna-it-redis \
   -p "${RD_PORT}:6379" \
   redis:7 >/dev/null
@@ -105,8 +105,10 @@ export STRIPE_WEBHOOK_SECRET=whsec_ci_placeholder
 echo "Building (if needed)..."
 pnpm build
 
-echo "Running migrations..."
-pnpm -C apps/api run migrate
+echo "Bootstrapping and verifying fresh database migrations..."
+pnpm migrate:bootstrap
+pnpm migrate:apply
+pnpm migrate:verify
 
 if command -v sha256sum >/dev/null 2>&1; then
   H=$(printf '%s' "$CI_TEST_API_KEY" | sha256sum | awk '{print $1}')

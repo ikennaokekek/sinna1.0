@@ -23,7 +23,7 @@ Use this checklist to track everything needed to reach 100% and launch safely. F
  - [ ] OPENAI_API_KEY=sk-...
  - [ ] ASSEMBLYAI_API_KEY=...
 - [ ] CORS_ORIGINS = `https://app.<yourdomain>,https://admin.<yourdomain>`
-- [ ] RUN_MIGRATIONS_ON_BOOT = `1`
+- [ ] Required database migrations have been run explicitly as a controlled deployment step
 - [ ] FEATURE_REALTIME = `0`
 - [ ] GPU_PROVIDER = `none`
 - [ ] API_RATE_LIMIT = `1000`

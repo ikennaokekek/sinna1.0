@@ -1,6 +1,11 @@
 {
   "name": "sinna-api",
   "version": "1.0.0",
+  "packageManager": "pnpm@10.26.1",
+  "engines": {
+    "node": ">=20 <25",
+    "pnpm": ">=10 <11"
+  },
   "description": "Advanced accessibility features API for streaming platforms",
   "main": "dist/index.js",
   "scripts": {
@@ -20,6 +25,7 @@
     "migrate:status": "pnpm -C apps/api migrate:status",
     "migrate:verify": "pnpm -C apps/api migrate:verify",
     "migrate:baseline": "pnpm -C apps/api migrate:baseline",
+    "migrate:bootstrap": "pnpm -C apps/api migrate:bootstrap",
     "migrate:apply": "pnpm -C apps/api migrate:apply",
     "test:migrate:integration": "pnpm -C apps/api test:migrate:integration",
     "test:heal": "vitest run --config vitest.heal.config.ts",
@@ -27,6 +33,8 @@
     "test:unit": "pnpm -C apps/api test && vitest run && pnpm -C apps/worker test",
     "test:ci": "pnpm build && pnpm test:unit",
     "test:all:local": "pnpm test:ci && pnpm test:integration:local",
+    "verify:offline": "bash scripts/verify-offline.sh",
+    "verify:clean-clone": "bash scripts/verify-clean-clone.sh",
     "verify:production": "tsx scripts/verify-production.ts",
     "smoke:staging": "tsx scripts/staging-job-smoke.ts",
     "test:manual:client": "tsx scripts/manual-client-flow.ts",

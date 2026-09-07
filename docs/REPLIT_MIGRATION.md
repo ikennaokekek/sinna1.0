@@ -90,7 +90,6 @@ List of variable names, no secret values:
 - TRUSTED_CIDRS
 - DATABASE_URL
 - REDIS_URL
-- RUN_MIGRATIONS_ON_BOOT
 - SEED_API_KEY_SECRET
 - R2_ACCOUNT_ID
 - R2_ACCESS_KEY_ID
@@ -109,7 +108,6 @@ List of variable names, no secret values:
 - WEBHOOK_SIGNING_SECRET
 - WEBHOOK_HMAC_HEADER
 - REPLIT_SYNC_SECRET
-- REPLIT_IP_ALLOWLIST
 - STRIPE_SECRET_KEY
 - STRIPE_WEBHOOK_SECRET
 - STRIPE_STANDARD_PRICE_ID
@@ -142,7 +140,15 @@ List of variable names, no secret values:
 
 - PostgreSQL database is required for tenant and API key lookups.
 - Automatic migrations live under `apps/api/migrations`.
-- The app checks for database health on startup and can run migrations when `RUN_MIGRATIONS_ON_BOOT=1`.
+- The app checks database health on startup. Run migrations explicitly; startup never runs migrations.
+- For a brand-new, empty database, run `pnpm migrate:bootstrap`, then
+  `pnpm migrate:apply` and `pnpm migrate:verify`. Bootstrap is intentionally
+  refused when a migration ledger, public user object, or unknown schema exists;
+  it is for disposable/new databases only.
+- For an existing database that already has the historical 001–008 schema, run
+  `pnpm migrate:baseline` (with its explicit confirmation flags), then apply
+  and verify. Baseline first checks the exact historical fingerprint, records
+  only the ledger atomically, and never executes historical SQL.
 
 ## Media/System Dependencies
 

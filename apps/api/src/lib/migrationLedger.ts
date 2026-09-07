@@ -96,6 +96,44 @@ async function ledgerExists(client: Queryable): Promise<boolean> {
   return result.rows[0]?.ledger != null;
 }
 
+/**
+ * Bootstrap is intentionally narrower than baseline: it may execute 001-008,
+ * but only in a database with no application objects.  Extension-owned objects
+ * are allowed because PostgreSQL templates/operators may have pgcrypto already
+ * installed; all other public objects make the database ineligible.
+ */
+async function assertBootstrapDatabaseIsEmpty(client: Queryable): Promise<void> {
+  if (await ledgerExists(client)) {
+    throw new Error('Bootstrap requires an empty database; the migration ledger already exists');
+  }
+  const result = await client.query(`
+    WITH public_objects AS (
+      SELECT 'pg_class'::regclass AS classid, c.oid FROM pg_class c
+      WHERE c.relnamespace = 'public'::regnamespace
+      UNION ALL SELECT 'pg_proc'::regclass, p.oid FROM pg_proc p
+      WHERE p.pronamespace = 'public'::regnamespace
+      UNION ALL SELECT 'pg_type'::regclass, t.oid FROM pg_type t
+      WHERE t.typnamespace = 'public'::regnamespace AND t.typtype <> 'b'
+    ), non_extension_public_objects AS (
+      SELECT o.oid FROM public_objects o
+      WHERE NOT EXISTS (
+        SELECT 1 FROM pg_depend d
+        WHERE d.classid = o.classid AND d.objid = o.oid AND d.deptype = 'e'
+      )
+    )
+    SELECT
+      EXISTS (SELECT 1 FROM non_extension_public_objects) AS has_public_objects,
+      EXISTS (
+        SELECT 1 FROM pg_namespace n
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'public')
+          AND n.nspname !~ '^pg_(toast|temp|toaster_temp)'
+      ) AS has_unknown_schemas
+  `);
+  if (result.rows[0]?.has_public_objects || result.rows[0]?.has_unknown_schemas) {
+    throw new Error('Bootstrap requires an empty database; public user objects or unknown schemas exist');
+  }
+}
+
 async function recordedMigrations(client: Queryable): Promise<LedgerRecord[]> {
   const result = await client.query('SELECT version, filename, checksum, disposition FROM public.sinna_core_schema_migrations ORDER BY version');
   return result.rows.map((row) => ({ version: Number(row.version), filename: row.filename, checksum: row.checksum, disposition: row.disposition }));
@@ -262,6 +300,39 @@ export async function baseline(client: Queryable, migrations: Migration[]): Prom
   }
 }
 
+/**
+ * Creates the immutable historical schema on a genuinely empty disposable/new
+ * database.  This is deliberately separate from baseline, which must never
+ * execute historical SQL.
+ */
+export async function bootstrap(client: Queryable, migrations: Migration[]): Promise<void> {
+  await assertBootstrapDatabaseIsEmpty(client);
+  await client.query('BEGIN');
+  try {
+    // Recheck after BEGIN so the eligibility decision and all changes are atomic.
+    await assertBootstrapDatabaseIsEmpty(client);
+    for (const migration of migrations.slice(0, HISTORICAL_MIGRATION_COUNT)) {
+      await client.query(migration.sql);
+    }
+    // PostgreSQL names 001's unnamed primary key tenants_pkey.  The established
+    // baseline fingerprint uses the Render canonical tenants_pkey1 name.
+    await client.query('ALTER TABLE public.tenants RENAME CONSTRAINT tenants_pkey TO tenants_pkey1');
+    await verifyHistoricalSchemaFingerprint(client);
+    await createLedger(client);
+    for (const migration of migrations.slice(0, HISTORICAL_MIGRATION_COUNT)) {
+      await client.query(
+        'INSERT INTO public.sinna_core_schema_migrations (version, filename, checksum, disposition) VALUES ($1, $2, $3, $4)',
+        [migration.version, migration.filename, migration.checksum, 'baselined'],
+      );
+    }
+    validateLedgerRecords(await recordedMigrations(client), migrations.slice(0, HISTORICAL_MIGRATION_COUNT), true);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  }
+}
+
 export async function apply(client: Queryable, migrations: Migration[]): Promise<void> {
   const recorded = await verifyLedger(client, migrations, true);
   const applied = new Set(recorded.map((migration) => migration.version));
@@ -284,7 +355,7 @@ export async function apply(client: Queryable, migrations: Migration[]): Promise
   }
 }
 
-export type MigrationCommand = 'status' | 'verify' | 'baseline' | 'apply';
+export type MigrationCommand = 'status' | 'verify' | 'baseline' | 'bootstrap' | 'apply';
 
 export async function runMigrationCommand(command: MigrationCommand, options: { connectionString?: string; migrationsDirectory?: string; baselineConfirmed?: boolean } = {}): Promise<{ migrations: Migration[]; recorded: number[]; pending: number[] }> {
   const migrations = await discoverMigrations(options.migrationsDirectory);
@@ -301,6 +372,8 @@ export async function runMigrationCommand(command: MigrationCommand, options: { 
     if (command === 'baseline') {
       if (!options.baselineConfirmed) throw new Error('Baseline requires --through 008 and --confirm-baseline');
       await baseline(client, migrations);
+    } else if (command === 'bootstrap') {
+      await bootstrap(client, migrations);
     } else if (command === 'status') {
       // Status is intentionally read-only and reports an absent ledger as empty.
       const records = await ledgerExists(client) ? await recordedMigrations(client) : [];

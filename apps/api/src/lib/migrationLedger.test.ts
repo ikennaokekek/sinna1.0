@@ -7,6 +7,7 @@ import {
   apply,
   assertApprovedHistoricalMigrations,
   baseline,
+  bootstrap,
   discoverMigrations,
   runMigrationCommand,
   verifyHistoricalSchemaFingerprint,
@@ -61,6 +62,47 @@ describe('migration ledger', () => {
     await baseline({ query } as never, migrations);
     expect(query.mock.calls.some(([sql]) => sql === migrations[0].sql)).toBe(false);
     expect(query.mock.calls.filter(([sql]) => String(sql).includes('INSERT INTO public.sinna_core_schema_migrations'))).toHaveLength(8);
+  });
+
+  it('bootstraps an empty database atomically with historical SQL and baselined records', async () => {
+    const migrations = await discoverMigrations();
+    let inserted = 0;
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('to_regclass')) return { rows: [{ ledger: null }] };
+      if (sql.includes('WITH public_objects')) return { rows: [{ has_public_objects: false, has_unknown_schemas: false }] };
+      if (sql.includes('WITH expected_columns')) return { rows: [{ matches: true }] };
+      if (sql.includes('SELECT version')) return { rows: inserted === 8 ? historicalRows(migrations) : [] };
+      if (sql.includes('INSERT INTO public.sinna_core_schema_migrations')) inserted++;
+      return { rows: [] };
+    });
+    await bootstrap({ query } as never, migrations);
+    expect(query.mock.calls.map(([sql]) => sql)).toContain(migrations[0].sql);
+    expect(query).toHaveBeenCalledWith('ALTER TABLE public.tenants RENAME CONSTRAINT tenants_pkey TO tenants_pkey1');
+    expect(query.mock.calls.filter(([sql]) => String(sql).includes('INSERT INTO public.sinna_core_schema_migrations'))).toHaveLength(8);
+    expect(query).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('refuses bootstrap on a non-empty schema before executing historical SQL', async () => {
+    const migrations = await discoverMigrations();
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('to_regclass')) return { rows: [{ ledger: null }] };
+      if (sql.includes('WITH public_objects')) return { rows: [{ has_public_objects: true, has_unknown_schemas: false }] };
+      return { rows: [] };
+    });
+    await expect(bootstrap({ query } as never, migrations)).rejects.toThrow(/empty database/);
+    expect(query.mock.calls.some(([sql]) => sql === migrations[0].sql)).toBe(false);
+  });
+
+  it('rolls back bootstrap schema and ledger changes when historical SQL fails', async () => {
+    const migrations = await discoverMigrations();
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('to_regclass')) return { rows: [{ ledger: null }] };
+      if (sql.includes('WITH public_objects')) return { rows: [{ has_public_objects: false, has_unknown_schemas: false }] };
+      if (sql === migrations[2].sql) throw new Error('historical failure');
+      return { rows: [] };
+    });
+    await expect(bootstrap({ query } as never, migrations)).rejects.toThrow('historical failure');
+    expect(query).toHaveBeenCalledWith('ROLLBACK');
   });
 
   it('rejects a non-matching historical schema fingerprint', async () => {

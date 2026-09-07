@@ -1,8 +1,8 @@
 import { MigrationCommand, runMigrationCommand } from '../lib/migrationLedger';
 
 const command = process.argv[2] as MigrationCommand | undefined;
-if (!command || !['status', 'verify', 'baseline', 'apply'].includes(command)) {
-  console.error('Usage: migrate <status|verify|baseline|apply>');
+if (!command || !['status', 'verify', 'baseline', 'bootstrap', 'apply'].includes(command)) {
+  console.error('Usage: migrate <status|verify|baseline|bootstrap|apply>');
   process.exitCode = 1;
 } else {
   const baselineConfirmed = command === 'baseline'

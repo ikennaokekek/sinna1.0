@@ -106,11 +106,11 @@ Since you're using **Replit Developer Portal** for checkout, Replit should handl
 
 ## ✅ Next Steps
 
-1. **Set `ENABLE_RENDER_CHECKOUT_HANDLER=false`** in Render (done)
-2. **Check Replit email configuration**
-3. **Check Replit logs** for email errors
-4. **Verify Replit sends email** after checkout
-5. **Test checkout flow** end-to-end
+1. **Check onboarding email configuration**
+2. **Check onboarding logs** for email errors
+3. **Verify onboarding sends email** after checkout
+4. **Verify the authenticated tenant sync completes**
+5. **Test checkout and sync flow** end-to-end
 
 ---
 

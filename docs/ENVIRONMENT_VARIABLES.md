@@ -1,228 +1,112 @@
-# Environment Variables Documentation
+# SINNA Core environment rebuild manifest
 
-## Required Variables
+This is the provider-neutral source of truth for environment configuration. Copy
+`env.example` into a local secret mechanism and replace every placeholder there;
+do not commit populated values. “Required” means required for the stated process
+or feature, not that every optional feature must be enabled. No startup path runs
+database migrations.
 
-### Database
-- **`DATABASE_URL`** (Required)
-  - PostgreSQL connection string
-  - Format: `postgresql://<DB_USER>:<DB_PASSWORD>@<DB_HOST>:<DB_PORT>/<DB_NAME>`
-  - Example: `postgresql://<DB_USER>:<DB_PASSWORD>@<DB_HOST>:<DB_PORT>/<DB_NAME>`
-  - Used for: Primary database connection
+## Runtime variables
 
-### Redis
-- **`REDIS_URL`** (Optional, but recommended)
-  - Redis connection string for queue and rate limiting
-  - Format: `redis://user:password@host:port` or `rediss://...` for TLS
-  - Example: `redis://sinna-redis:6379`
-  - Used for: BullMQ queues, rate limiting, idempotency caching
-  - Fallback: In-memory rate limiter if not provided
+| Variable | Classification | Runtime behavior |
+| --- | --- | --- |
+| `NODE_ENV` | Optional (defaults to `development`) | `production` enables strict validation and production behavior; `test` enables test behavior. |
+| `PORT` | Optional (API listener default is `4000`) | API listen port. |
+| `DATABASE_URL` | **Required in production** | PostgreSQL connection for API, worker, and migration command. |
+| `REDIS_URL` | **Required in production** | Queue and shared rate-limit connection. Development/test can use in-memory fallbacks. |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` | **Required in production** | Object-storage account, credentials, and bucket. The endpoint is derived from the account ID; there is no `R2_ENDPOINT` setting. |
+| `CLOUDINARY_URL` | **Required in production** | Media-transform service connection. |
+| `ASSEMBLYAI_API_KEY` | Conditional required | Caption/transcription provider credential. Production validation requires this or `OPENAI_API_KEY`. |
+| `OPENAI_API_KEY` | Conditional required | AI/TTS provider credential. Production validation requires this or `ASSEMBLYAI_API_KEY`. |
+| `OPEN_ROUTER_QWEN_KEY` | Conditional required | Vision-instruction provider credential. Required only when a Qwen instruction request is made. |
+| `BASE_URL` | Optional, legacy-compatible | API base URL used by some runtime and utility paths. Prefer `BASE_URL_PUBLIC` where a public URL is needed. |
+| `BASE_URL_PUBLIC` | Optional but required for correct public checkout/link targets | Public API/application URL used in checkout success/cancel URLs and provider referer metadata. |
+| `BASE_URL_PRIVATE` | Optional compatibility setting | Accepted by validation for private/internal URL configuration; Core does not currently read it directly. |
+| `CORS_ORIGINS` | **Required in production** | Comma-separated browser origins. Empty production configuration rejects all origins and aborts startup. |
+| `TRUST_PROXIES` | Optional (default `0`) | Set exactly `1` to trust proxy headers. |
+| `TRUSTED_CIDRS` | Optional | Comma-separated trusted CIDRs for rate-limit handling. |
+| `STATUS_PAGE_URL` | Optional | Status URL exposed by the API. |
+| `SENTRY_DSN` | Optional | Error-monitoring DSN; monitoring is disabled when absent. |
+| `REPLIT_SYNC_SECRET` | Required for `/v1/sync/tenant` | Shared secret compared in constant time with the `x-sync-secret` header. Missing it rejects sync requests; IP allowlists are not an authentication alternative. |
+| `STRIPE_SECRET_KEY` | Conditional required | Payment-provider client credential. Required when Core creates checkout sessions; production webhooks also require a configured client. |
+| `STRIPE_WEBHOOK_SECRET` | Conditional required | Payment webhook signing secret. Required for normal webhook verification. |
+| `STRIPE_STANDARD_PRICE_ID` | Conditional required | Standard subscription price used by `/v1/billing/checkout`. |
+| `STRIPE_SECRET_KEY_LIVE` | Optional production override | Takes precedence over `STRIPE_SECRET_KEY` in the live-key helper. |
+| `STRIPE_WEBHOOK_SECRET_LIVE` | Optional production override | Takes precedence over `STRIPE_WEBHOOK_SECRET` in the live-webhook-secret helper. |
+| `GRACE_DAYS` | Optional (default `7`) | Integer number of days applied after a failed invoice payment. |
+| `NOTIFY_FROM_EMAIL` | Optional (runtime fallback exists) | Sender for notification email. |
+| `NOTIFY_FALLBACK_EMAIL` | Optional | Operations/fallback recipient for payment and cancellation notices. |
+| `RESEND_API_KEY` | Optional | Preferred email-provider credential. |
+| `SENDGRID_API_KEY` | Optional | Fallback email-provider credential if the preferred credential is absent. |
+| `ADMIN_ENDPOINTS_ENABLED` | Optional | In production, admin endpoints require the exact value `1`; they are otherwise disabled. |
+| `ADMIN_API_KEY` | Required when admin access is enabled/used | Shared key for admin authorization. |
+| `SEED_API_KEY_SECRET` | Required for production seed operation | Secret used to deterministically derive the seeded tenant API key; production seeding fails without it. |
+| `TENANT_NAME` | Optional (seed script default exists) | Name used by the API seed script. |
+| `PLAN` | Optional (seed script default is `standard`) | Plan assigned by the API seed script. |
+| `JWT_SECRET` | Test-only compatibility setting | Local verification scripts export it, but current Core runtime does not consume it. |
 
-### Stripe
-- **`STRIPE_SECRET_KEY`** (Required for billing)
-  - Stripe secret API key
-  - Format: `sk_live_...` (production) or `sk_test_...` (testing)
-  - Example: `sk_live_51AbCdEf...`
-  - Used for: Creating checkout sessions, processing payments
+## Payment and provisioning semantics
 
-- **`STRIPE_WEBHOOK_SECRET`** (Required for webhooks)
-  - Stripe webhook signing secret
-  - Format: `whsec_...`
-  - Example: `<STRIPE_WEBHOOK_SECRET>`
-  - Used for: Verifying webhook signatures
+Core can create a payment-provider checkout session when its client, standard
+price ID, and public URL are configured. A
+`checkout.session.completed` webhook is authenticated and durably acknowledged,
+**but it does not provision a tenant, rotate/create an API key, or send a key
+email**. Onboarding owns provisioning and uses `/v1/sync/tenant`, authenticated
+by `REPLIT_SYNC_SECRET`. Subscription lifecycle webhooks update an already
+associated tenant.
 
-- **`STRIPE_STANDARD_PRICE_ID`** (Required for subscriptions)
-  - Stripe Price ID for standard plan
-  - Format: `price_...`
-  - Example: `price_1234567890abcdef`
-  - Used for: Creating checkout sessions
+Normal webhook processing always requires a raw request body, payment client,
+webhook secret, and valid provider signature. `STRIPE_TESTING=true` bypasses
+signature construction **only when `NODE_ENV=test`**; it has no production-like
+bypass effect.
 
-### Cloudflare R2
-- **`R2_ACCOUNT_ID`** (Required)
-  - Cloudflare R2 account ID
-  - Format: Alphanumeric string
-  - Example: `a1b2c3d4e5f6g7h8i9j0`
-  - Used for: R2 client initialization
+## Migration and test-only variables
 
-- **`R2_ACCESS_KEY_ID`** (Required)
-  - Cloudflare R2 access key ID
-  - Format: Alphanumeric string
-  - Example: `abc123def456ghi789`
-  - Used for: R2 authentication
+| Variable | Classification | Behavior |
+| --- | --- | --- |
+| `TEST_MIGRATION_DATABASE_URL` | Test-only, required to enable migration-ledger integration test | Connection URL for a disposable PostgreSQL database. |
+| `CONFIRM_DISPOSABLE_MIGRATION_DATABASE` | Test-only, required with the preceding variable | Must equal `YES`; otherwise that destructive integration test is skipped. |
+| `VITEST` | Test-only | Exact `true` enables test-specific database cleanup behavior. |
+| `STRIPE_TESTING` | Test-only | See hardened webhook restriction above. |
+| `HOST` | Test-only internal setting | TCP probe host used inside the local integration runner. |
+| `CI_TEST_API_KEY` | Optional test-only | Local integration tenant key; its runner provides a default. |
+| `RUN_E2E` | Optional test-only (default `1`) | Set `0` to skip E2E in the local integration runner. |
+| `SINNA_IT_PG_PORT`, `SINNA_IT_RD_PORT` | Optional test-only | Local integration PostgreSQL/Redis port overrides. |
+| `SINNA_LOCAL_PG_PORT`, `SINNA_LOCAL_RD_PORT` | Optional development-only | Persistent local PostgreSQL/Redis port overrides. |
 
-- **`R2_SECRET_ACCESS_KEY`** (Required)
-  - Cloudflare R2 secret access key
-  - Format: Alphanumeric string
-  - Example: `secret123456789abcdef`
-  - Used for: R2 authentication
+Run migrations as an explicit migration command with `DATABASE_URL`; startup does
+not migrate. On a new empty disposable database use `pnpm migrate:bootstrap`,
+then `pnpm migrate:apply` and `pnpm migrate:verify`. Bootstrap executes the
+immutable 001–008 history only after refusing an existing ledger, public user
+objects, or unknown schemas. On an existing historical database, use the
+explicitly confirmed `pnpm migrate:baseline` instead: it verifies the
+fingerprint and writes ledger rows but never executes historical SQL.
 
-- **`R2_BUCKET`** (Required)
-  - Cloudflare R2 bucket name
-  - Format: Alphanumeric string with hyphens
-  - Example: `sinna-artifacts`
-  - Used for: Object storage bucket name
+## Smoke, verification, and manual-operation variables
 
-- **`R2_ENDPOINT`** (Required)
-  - Cloudflare R2 endpoint URL
-  - Format: `https://...`
-  - Example: `https://xxx.r2.cloudflarestorage.com`
-  - Used for: R2 API endpoint
+| Variable | Classification | Used by |
+| --- | --- | --- |
+| `API_BASE_URL`, `E2E_BASE_URL`, `STAGING_E2E_BASE_URL` | Operational/test; one required by the relevant script | Target API URL. Scripts use their documented precedence. |
+| `API_KEY`, `TEST_API_KEY` | Operational/test; one required by API/smoke scripts | Tenant API key sent as `x-api-key`. |
+| `TEST_VIDEO_URL` | Optional test-only | Public media URL; scripts have a sample fallback. |
+| `PRESET_ID` | Optional test-only | Smoke preset; default is `everyday`. |
+| `PRESETS_CSV` | Optional test-only | Manual-flow preset list; default is `everyday`. |
+| `SMOKE_POLL_INTERVAL_SEC`, `SMOKE_POLL_TIMEOUT_SEC` | Optional test-only | Poll interval (default `5`) and timeout (default `600`) in seconds. |
+| `SKIP_BILLING`, `SKIP_JOBS` | Optional test-only | Manual-flow switches; exact `1` skips that portion. |
+| `TEST_EMAIL` | Conditional test-only | Recipient for checkout/email utility scripts. |
+| `WEBHOOK_URL` | Optional test-only | Webhook utility target; its script has a default. |
+| `STRIPE_LIVE_SECRET_KEY`, `STRIPE_LIVE_PRICE_ID` | Conditional operational | Explicit production credentials for payment utility scripts, separate from Core runtime overrides. |
+| `RENDER_API_KEY` | Conditional operational secret | Host control-plane credential used only by the watchdog. |
+| `RENDER_SERVICE_ID`, `RENDER_API_SERVICE_ID`, `RENDER_SERVICE`, `render_service_id` | Conditional operational | Watchdog service identifier aliases, checked in that order. |
+| `SLACK_WEBHOOK_URL` | Optional operational secret | Watchdog alert delivery endpoint. |
 
-### Email Services
-- **`RESEND_API_KEY`** (Optional, preferred)
-  - Resend API key for sending emails
-  - Format: `re_...`
-  - Example: `<RESEND_API_KEY>`
-  - Used for: Email notifications (primary)
+`WEBHOOK_SIGNING_SECRET` and `WEBHOOK_HMAC_HEADER` remain accepted by the shared
+validation schema for compatibility, but current Core routes do not consume
+them. They are not required configuration.
 
-- **`SENDGRID_API_KEY`** (Optional, fallback)
-  - SendGrid API key for sending emails
-  - Format: `SG....`
-  - Example: `<SENDGRID_API_KEY>`
-  - Used for: Email notifications (fallback if Resend not available)
+## Security and deployment notes
 
-- **`NOTIFY_FROM_EMAIL`** (Required)
-  - Email address to send notifications from
-  - Format: Valid email address
-  - Example: `noreply@sinna.com`
-  - Used for: From address in email notifications
-
-- **`NOTIFY_FALLBACK_EMAIL`** (Optional)
-  - Fallback email for notifications
-  - Format: Valid email address
-  - Example: `admin@sinna.com`
-  - Used for: Admin notifications when customer email unavailable
-
-### API Configuration
-- **`BASE_URL`** (Required)
-  - Base URL of the API
-  - Format: `https://...` or `http://...`
-  - Example: `https://sinna1-0.onrender.com`
-  - Used for: Generating checkout URLs, email links
-
-- **`PORT`** (Optional, default: 4000)
-  - Port to run the API server on
-  - Format: Number
-  - Example: `4000`
-  - Used for: Server port configuration
-
-- **`NODE_ENV`** (Optional, default: development)
-  - Node.js environment
-  - Values: `development`, `production`, `test`
-  - Example: `production`
-  - Used for: Environment-specific behavior
-
-- **`CORS_ORIGINS`** (Required in production)
-  - Comma-separated list of allowed CORS origins
-  - Format: `origin1,origin2,origin3`
-  - Example: `https://app.sinna.com,https://www.sinna.com`
-  - Used for: CORS configuration
-
-### Security
-- **`ADMIN_API_KEY`** (Optional)
-  - Admin API key for test endpoints
-  - Format: Any string
-  - Example: `admin-secret-key-123`
-  - Used for: Admin authentication for test endpoints
-
-- **`TRUST_PROXIES`** (Optional, default: 0)
-  - Trust proxy headers (for Render, Cloudflare, etc.)
-  - Values: `0` or `1`
-  - Example: `1`
-  - Used for: Correct IP address detection
-
-- **`WEBHOOK_SIGNING_SECRET`** (Optional)
-  - Secret for HMAC webhook signature verification
-  - Format: Any string
-  - Example: `webhook-secret-123`
-  - Used for: Verifying webhook signatures (non-Stripe)
-
-- **`WEBHOOK_HMAC_HEADER`** (Optional, default: x-webhook-signature)
-  - Header name for HMAC signature
-  - Format: Header name
-  - Example: `x-webhook-signature`
-  - Used for: Custom webhook signature header
-
-- **`TRUSTED_CIDRS`** (Optional)
-  - Comma-separated list of trusted CIDR blocks
-  - Format: `cidr1,cidr2`
-  - Example: `10.0.0.0/8,172.16.0.0/12`
-  - Used for: Bypassing rate limits for trusted IPs
-
-### Monitoring & Observability
-- **`SENTRY_DSN`** (Optional)
-  - Sentry DSN for error tracking
-  - Format: `https://...@sentry.io/...`
-  - Example: <SENTRY_DSN>
-  - Used for: Error tracking and monitoring
-
-- **`STATUS_PAGE_URL`** (Optional)
-  - URL to status page
-  - Format: `https://...`
-  - Example: `https://status.sinna.com`
-  - Used for: Status page link in headers
-
-### Worker Configuration
-- **`ASSEMBLYAI_API_KEY`** (Required for worker)
-  - AssemblyAI API key for transcription
-  - Format: Alphanumeric string
-  - Example: `abc123def456ghi789`
-  - Used for: Video transcription (worker service)
-
-- **`OPENAI_API_KEY`** (Required for worker)
-  - OpenAI API key for TTS
-  - Format: `sk-...`
-  - Example: `sk-1234567890abcdef`
-  - Used for: Text-to-speech (worker service)
-
-### Feature Flags
-- **`STRIPE_TESTING`** (Optional, default: false)
-  - Enable Stripe testing mode
-  - Values: `true` or `false`
-  - Example: `false`
-  - Used for: Allowing webhooks without signature verification in dev
-
-- **`RUN_MIGRATIONS_ON_BOOT`** (Optional, default: 0)
-  - Run database migrations on startup
-  - Values: `0` or `1`
-  - Example: `1`
-  - Used for: Automatic migration on deployment
-
-- **`GRACE_DAYS`** (Optional, default: 7)
-  - Number of grace days after payment failure
-  - Format: Number
-  - Example: `7`
-  - Used for: Grace period calculation
-
-## Optional Variables
-
-### Development & Testing
-- **`LOG_LEVEL`** (Optional)
-  - Logging level
-  - Values: `debug`, `info`, `warn`, `error`
-  - Example: `info`
-  - Used for: Controlling log verbosity
-
-## Environment Variable Validation
-
-The API validates all required environment variables on startup. Missing required variables will cause the server to exit with an error (except in development/test mode).
-
-## Production Checklist
-
-Before deploying to production, ensure:
-- [ ] All required variables are set
-- [ ] Change all default/test values to production values
-- [ ] Stripe keys are production keys
-- [ ] Database URL points to production database
-- [ ] CORS_ORIGINS includes only production domains
-- [ ] NODE_ENV is set to `production`
-- [ ] TRUST_PROXIES is set to `1` if behind proxy
-- [ ] SENTRY_DSN is configured for error tracking
-
-## Security Notes
-
-- Never commit `.env` files to version control
-- Use Render Environment Groups for production secrets
-- Rotate secrets regularly
-- Use different keys for staging and production
-- Keep `env.example` with placeholder values only
-
+Use any provider’s encrypted environment/secret facility; this project is not
+coupled to a particular host. Keep credentials distinct per environment, rotate
+them on exposure, and restrict production `CORS_ORIGINS`. `env.example` contains
+placeholders only and is safe to version-control; populated `.env` files are not.

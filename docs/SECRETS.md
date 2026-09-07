@@ -1,90 +1,46 @@
-# Sinna API - Environment Variables & Secrets
+# SINNA Core secrets handling
 
-This document lists environment variables required by the system. Do not commit real secrets here.
+Use `docs/ENVIRONMENT_VARIABLES.md` as the complete rebuild manifest, including
+non-secret runtime, migration, test, smoke, and operational variables. This file
+identifies which entries need secret storage and the security boundaries they
+protect. All values in `env.example` are placeholders.
 
-## Required Environment Variables
+## Store as secrets
 
-### CHECKPOINT 1 - Cloudflare R2 Storage
-```bash
-R2_ACCOUNT_ID=__R2_ACCOUNT_ID__
-R2_ACCESS_KEY_ID=__R2_ACCESS_KEY_ID__
-R2_SECRET_ACCESS_KEY=__R2_SECRET_ACCESS_KEY__
-R2_BUCKET=sinna1-0
-```
+| Secret group | Variables |
+| --- | --- |
+| Data and media | `DATABASE_URL`, `REDIS_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `CLOUDINARY_URL` |
+| AI providers | `ASSEMBLYAI_API_KEY`, `OPENAI_API_KEY`, `OPEN_ROUTER_QWEN_KEY` |
+| Payments | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY_LIVE`, `STRIPE_WEBHOOK_SECRET_LIVE`, `STRIPE_LIVE_SECRET_KEY` |
+| Core service authentication | `REPLIT_SYNC_SECRET`, `ADMIN_API_KEY`, `SEED_API_KEY_SECRET` |
+| Email and observability | `RESEND_API_KEY`, `SENDGRID_API_KEY`, `SENTRY_DSN` |
+| Test/operations | `API_KEY`, `TEST_API_KEY`, `TEST_MIGRATION_DATABASE_URL`, `RENDER_API_KEY`, `SLACK_WEBHOOK_URL` |
 
-### CHECKPOINT 2 - Upstash Redis
-```bash
-REDIS_URL=rediss://default:__TOKEN__@__HOST__:6379
-```
+Treat `R2_ACCOUNT_ID`, price IDs, bucket names, endpoint URLs, email addresses,
+and host service IDs as configuration rather than credentials, unless your
+organization classifies them more restrictively.
 
-### CHECKPOINT 3 - Cloudinary
-```bash
-CLOUDINARY_URL=cloudinary://<your_api_key>:<your_api_secret>@<cloud_name>
-```
+## Hardened integration rules
 
-### CHECKPOINT 4 - STT/TTS Services
-```bash
-ASSEMBLYAI_API_KEY=your-assemblyai-key
-OPENAI_API_KEY=sk-...
+- `/v1/sync/tenant` requires `REPLIT_SYNC_SECRET` in `x-sync-secret`; network
+  origin or an IP list does not authenticate the caller.
+- Payment webhooks require the provider signature, raw body, configured client,
+  and webhook secret. The only bypass is `NODE_ENV=test` together with
+  `STRIPE_TESTING=true`.
+- A completed checkout is acknowledged only. Core does not provision tenants or
+  issue API keys from that event; onboarding performs provisioning and syncs
+  Core with the shared sync secret.
+- Database migrations are explicit operations. Startup does not migrate.
 
-# AI Provider Configuration
-PROVIDER_CAPTIONS=assemblyai_realtime  # live
-PROVIDER_TTS=openai
-PROVIDER_CAPTIONS_VOD=whisper          # batch fallback
-```
+## Operating practice
 
-### CHECKPOINT 5 - Stripe Payment Processing
-```bash
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_STANDARD_PRICE_ID=price_...
-WEBHOOK_SIGNING_SECRET=whsec_...
-```
-
-### CHECKPOINT 6 - Email Service (Choose One)
-```bash
-# Option 1: Resend (Recommended)
-RESEND_API_KEY=re_...
-
-# Option 2: SendGrid (Alternative)
-SENDGRID_API_KEY=SG...
-
-# Email Configuration
-NOTIFY_FROM_EMAIL=noreply@yourdomain.com
-```
-
-### CHECKPOINT 7 - Monitoring & Analytics
-```bash
-SENTRY_DSN=https://<public_key>@sentry.io/<project_id>
-GRAFANA_PROM_PUSH_URL=  # Optional
-```
-
-## Server Configuration
-```bash
-PORT=4000
-NODE_ENV=development
-BASE_URL=http://localhost:4000 , https://sinna1-0.onrender.com
-DATABASE_URL=postgresql://USER:PASS@HOST:PORT/DB
-JWT_SECRET=your-super-secret-jwt-key-here
-API_RATE_LIMIT=100
-```
-
-## Phase 2 Feature Flags
-```bash
-FEATURE_REALTIME=0
-GPU_PROVIDER=none
-```
-
-## Setup Instructions
-
-1. Copy `env.example` to `.env`
-2. Fill in the required values per environment (local, staging, prod)
-3. For production, set all secrets in your hosting platform (Render) only
-4. Never commit `.env` files or real credentials to version control
-
-## Security Notes
-
-- Keep API keys secure and rotate regularly
-- Use different keys for development, staging, and production
-- Monitor usage and set up alerts for unusual activity
-- Enable webhook signature verification for all external services
+1. Put secrets in a provider-neutral encrypted secret store or local untracked
+   `.env` file; inject them only into the process that needs them.
+2. Use separate credentials for development, test, staging, and production.
+3. Rotate a credential immediately after suspected exposure and update both
+   sides of shared-secret integrations in a coordinated change.
+4. For the migration integration test, use a disposable database and set
+   `CONFIRM_DISPOSABLE_MIGRATION_DATABASE=YES`; the test intentionally modifies
+   its database.
+5. Never paste real credentials into documentation, examples, source control,
+   logs, or support tickets.

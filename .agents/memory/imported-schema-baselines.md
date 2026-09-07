@@ -7,4 +7,4 @@ Fingerprint the reconciled live database shape when baselining an imported syste
 
 **Why:** Imported databases can have equivalent but historically different metadata, such as constraint names. A permanent exact historical fingerprint also rejects legitimate columns or constraints added by later migrations.
 
-**How to apply:** Before the first baseline, verify the approved live inventory exactly and record historical files without executing them. For later verification, reject checksum or ledger drift while allowing recorded future migrations to evolve the schema.
+**How to apply:** Before the first baseline, verify the approved live inventory exactly and record historical files without executing them. For a genuinely empty new database, use the explicit bootstrap path, which constructs and fingerprints the canonical historical schema before recording it; never use bootstrap on an imported database. For later verification, reject checksum or ledger drift while allowing recorded future migrations to evolve the schema.

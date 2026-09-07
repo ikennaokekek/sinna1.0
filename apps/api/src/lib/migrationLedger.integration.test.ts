@@ -15,53 +15,8 @@ let migrationDir: string;
 
 async function resetFixture(): Promise<void> {
   await pool.query(`
-    DROP TABLE IF EXISTS public.future_rollback_probe, public.future_apply_probe,
+    DROP TABLE IF EXISTS public.bootstrap_refusal_probe, public.future_rollback_probe, public.future_apply_probe,
       public.sinna_core_schema_migrations, public.stripe_webhook_events, public.api_keys, public.usage_counters, public.tenants CASCADE;
-    CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-    CREATE TABLE public.tenants (
-      id uuid NOT NULL DEFAULT gen_random_uuid(),
-      name text NOT NULL,
-      active boolean DEFAULT false,
-      grace_until timestamptz,
-      plan text DEFAULT 'standard',
-      created_at timestamptz DEFAULT now(),
-      stripe_customer_id text,
-      stripe_subscription_id text,
-      status text DEFAULT 'inactive',
-      expires_at timestamptz,
-      updated_at timestamptz DEFAULT CURRENT_TIMESTAMP,
-      email text,
-      CONSTRAINT tenants_pkey1 PRIMARY KEY (id),
-      CONSTRAINT tenants_stripe_customer_id_key UNIQUE (stripe_customer_id),
-      CONSTRAINT tenants_status_check CHECK (status IN ('active', 'inactive', 'expired')),
-      CONSTRAINT tenants_email_key UNIQUE (email)
-    );
-    CREATE TABLE public.api_keys (
-      key_hash text NOT NULL CONSTRAINT api_keys_pkey PRIMARY KEY,
-      tenant_id uuid,
-      created_at timestamptz DEFAULT now(),
-      last_rotated_at timestamptz,
-      CONSTRAINT api_keys_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE
-    );
-    CREATE TABLE public.usage_counters (
-      tenant_id uuid NOT NULL CONSTRAINT usage_counters_pkey PRIMARY KEY,
-      period_start date NOT NULL,
-      minutes_used integer DEFAULT 0,
-      jobs integer DEFAULT 0,
-      egress_bytes bigint DEFAULT 0,
-      CONSTRAINT usage_counters_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE
-    );
-    CREATE INDEX idx_tenants_active ON public.tenants(active) WHERE active = true;
-    CREATE INDEX idx_tenants_plan ON public.tenants(plan);
-    CREATE INDEX idx_usage_counters_period ON public.usage_counters(period_start);
-    CREATE INDEX idx_usage_counters_tenant_period ON public.usage_counters(tenant_id, period_start);
-    CREATE INDEX idx_api_keys_tenant_id ON public.api_keys(tenant_id);
-    CREATE INDEX idx_tenants_created_at ON public.tenants(created_at);
-    CREATE INDEX idx_tenants_stripe_customer ON public.tenants(stripe_customer_id);
-    CREATE INDEX idx_tenants_stripe_subscription ON public.tenants(stripe_subscription_id);
-    CREATE INDEX idx_tenants_status ON public.tenants(status);
-    CREATE INDEX idx_tenants_expires_at ON public.tenants(expires_at);
-    CREATE INDEX idx_tenants_email ON public.tenants(email);
   `);
 }
 
@@ -82,22 +37,19 @@ describe.skipIf(!enabled)('migration ledger disposable PostgreSQL integration', 
 
   afterAll(async () => {
     if (pool) {
-      await pool.query('DROP TABLE IF EXISTS public.future_rollback_probe, public.future_apply_probe, public.sinna_core_schema_migrations, public.stripe_webhook_events, public.api_keys, public.usage_counters, public.tenants CASCADE');
+      await pool.query('DROP TABLE IF EXISTS public.bootstrap_refusal_probe, public.future_rollback_probe, public.future_apply_probe, public.sinna_core_schema_migrations, public.stripe_webhook_events, public.api_keys, public.usage_counters, public.tenants CASCADE');
       await pool.end();
     }
     if (migrationDir) await rm(migrationDir, { recursive: true, force: true });
   });
 
-  it('baselines, applies only future SQL, rejects drift/lock contention, and rolls back failures', async () => {
-    const beforeFk = await pool.query(`SELECT oid FROM pg_constraint WHERE conname = 'api_keys_tenant_id_fkey'`);
-    const baseline = await runMigrationCommand('baseline', {
+  it('bootstraps an empty database, applies future SQL, rejects drift/lock contention, and rolls back failures', async () => {
+    const bootstrap = await runMigrationCommand('bootstrap', {
       connectionString: testUrl,
       migrationsDirectory: migrationDir,
-      baselineConfirmed: true,
     });
-    expect(baseline.recorded).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    const afterFk = await pool.query(`SELECT oid FROM pg_constraint WHERE conname = 'api_keys_tenant_id_fkey'`);
-    expect(afterFk.rows[0].oid).toBe(beforeFk.rows[0].oid);
+    expect(bootstrap.recorded).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect((await pool.query(`SELECT conname FROM pg_constraint WHERE conname = 'tenants_pkey1'`)).rowCount).toBe(1);
 
     const migration010 = 'CREATE TABLE public.future_apply_probe (id integer PRIMARY KEY);';
     await writeFile(path.join(migrationDir, '010_future_apply_probe.sql'), migration010);
@@ -145,5 +97,16 @@ describe.skipIf(!enabled)('migration ledger disposable PostgreSQL integration', 
       identityLockHolder.release();
       identityLockContender.release();
     }
+  });
+
+  it('refuses bootstrap when the disposable schema is not empty', async () => {
+    await resetFixture();
+    await pool.query('CREATE TABLE public.bootstrap_refusal_probe (id integer)');
+    await expect(runMigrationCommand('bootstrap', {
+      connectionString: testUrl,
+      migrationsDirectory: migrationDir,
+    })).rejects.toThrow(/empty database/);
+    expect((await pool.query(`SELECT to_regclass('public.sinna_core_schema_migrations') AS relation`)).rows[0].relation).toBeNull();
+    await pool.query('DROP TABLE public.bootstrap_refusal_probe');
   });
 });
