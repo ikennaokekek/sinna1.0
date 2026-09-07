@@ -5,8 +5,8 @@
 ### Database
 - **`DATABASE_URL`** (Required)
   - PostgreSQL connection string
-  - Format: `postgresql://user:password@host:port/database`
-  - Example: `postgresql://sinna:password@dpg-xxx.oregon-postgres.render.com:5432/sinna_db`
+  - Format: `postgresql://<DB_USER>:<DB_PASSWORD>@<DB_HOST>:<DB_PORT>/<DB_NAME>`
+  - Example: `postgresql://<DB_USER>:<DB_PASSWORD>@<DB_HOST>:<DB_PORT>/<DB_NAME>`
   - Used for: Primary database connection
 
 ### Redis
@@ -27,7 +27,7 @@
 - **`STRIPE_WEBHOOK_SECRET`** (Required for webhooks)
   - Stripe webhook signing secret
   - Format: `whsec_...`
-  - Example: `whsec_1234567890abcdef`
+  - Example: `<STRIPE_WEBHOOK_SECRET>`
   - Used for: Verifying webhook signatures
 
 - **`STRIPE_STANDARD_PRICE_ID`** (Required for subscriptions)
@@ -71,13 +71,13 @@
 - **`RESEND_API_KEY`** (Optional, preferred)
   - Resend API key for sending emails
   - Format: `re_...`
-  - Example: `re_1234567890abcdef`
+  - Example: `<RESEND_API_KEY>`
   - Used for: Email notifications (primary)
 
 - **`SENDGRID_API_KEY`** (Optional, fallback)
   - SendGrid API key for sending emails
   - Format: `SG....`
-  - Example: `SG.1234567890abcdef`
+  - Example: `<SENDGRID_API_KEY>`
   - Used for: Email notifications (fallback if Resend not available)
 
 - **`NOTIFY_FROM_EMAIL`** (Required)
@@ -152,7 +152,7 @@
 - **`SENTRY_DSN`** (Optional)
   - Sentry DSN for error tracking
   - Format: `https://...@sentry.io/...`
-  - Example: `https://abc123@o123456.ingest.sentry.io/123456`
+  - Example: <SENTRY_DSN>
   - Used for: Error tracking and monitoring
 
 - **`STATUS_PAGE_URL`** (Optional)

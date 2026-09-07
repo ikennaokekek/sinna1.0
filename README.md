@@ -5,27 +5,47 @@ Advanced accessibility features API for streaming platforms worldwide. Sinna pro
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 18+ 
-- Redis (Upstash recommended)
+- Node.js 20 LTS
+- pnpm 9+
+- PostgreSQL 15+
+- Redis 7+
 - Cloudflare R2 storage account
+- Optional: Cloudinary for video transforms and frame analysis
 
 ### Installation
 ```bash
 git clone <your-repo>
 cd SINNA1.0
-npm install
+pnpm install
 cp env.example .env
-# Configure your environment variables
-npm run build
-npm start
+# fill in the required variables from the template
+pnpm build
+pnpm start
 ```
 
-### Development
+### Local development
 ```bash
-npm run dev          # Start API server
-npm run dev:worker   # Start background worker
-npm test            # Run tests
-npm run test:e2e    # Run E2E tests
+pnpm dev            # Start API server on port 4000
+pnpm dev:worker     # Start background worker process
+pnpm test           # Run unit tests
+pnpm test:e2e       # Run Playwright end-to-end tests against E2E_BASE_URL
+```
+
+### Database and worker prerequisites for local runs
+The API and worker expect PostgreSQL and Redis to be available at runtime. In local development they are typically started via Docker or a local service manager:
+
+```bash
+# Example with local services
+export DATABASE_URL=postgresql://__DB_USER__:__DB_PASSWORD__@127.0.0.1:5432/postgres
+export REDIS_URL=redis://127.0.0.1:6379
+pnpm dev
+pnpm dev:worker
+```
+
+If you want to initialize the schema before running the API locally, use:
+
+```bash
+pnpm -C apps/api run migrate
 ```
 
 ## 📋 Features

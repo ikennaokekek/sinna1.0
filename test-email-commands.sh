@@ -1,6 +1,8 @@
 # 📧 Email Testing Commands
 # ========================
 
+API_KEY="${API_KEY:?API_KEY must be set}"
+
 # Test 1: Check email service status
 echo "🔍 Check Email Service Status:"
 curl -s http://localhost:4000/email-status | jq '.'
@@ -22,7 +24,7 @@ curl -X POST http://localhost:4000/test-email \
   -d '{
     "to": "ikennaokeke1996@gmail.com",
     "subject": "Your Sinna API Key is Ready! 🎉",
-    "text": "Your API Key: sk_test_1234567890abcdef\n\nBase URL: http://localhost:4000\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nHappy coding! 🚀"
+    "text": "Your API Key: '"$API_KEY"'\n\nBase URL: http://localhost:4000\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nHappy coding! 🚀"
   }' | jq '.'
 
 echo ""

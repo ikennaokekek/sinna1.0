@@ -41,12 +41,14 @@ echo ""
 echo "📤 Test 3: Send Custom Email"
 echo "---------------------------"
 
+API_KEY="${API_KEY:?API_KEY must be set}"
+
 CUSTOM_RESPONSE=$(curl -s -X POST http://localhost:4000/test-email \
   -H "Content-Type: application/json" \
   -d '{
     "to": "ikennaokeke1996@gmail.com",
     "subject": "🎉 API Key Delivery Test",
-    "text": "Your API Key: sk_test_1234567890abcdef\n\nBase URL: http://localhost:4000\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nHappy coding! 🚀"
+    "text": "Your API Key: '"$API_KEY"'\n\nBase URL: http://localhost:4000\n\nKeep this key secure and use it in the X-API-Key header for all requests.\n\nHappy coding! 🚀"
   }')
 
 echo "Custom email response:"

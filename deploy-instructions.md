@@ -36,36 +36,36 @@ git push -u origin main
 
 In the Render dashboard, go to each service and add these environment variables:
 
-### 🔴 CRITICAL VARIABLES (Copy exactly):
+### 🔴 CRITICAL VARIABLES (set in the deployment provider):
 ```
-REDIS_URL=rediss://default:AWMYAAIncDFjZGEwYTJlMGJlMjU0YzkzYjdkYjZmYmNhYmViM2VlNnAxMjUzNjg@good-owl-25368.upstash.io:6379
-R2_ACCOUNT_ID=df7855d26a40bad170d0ad63c971c168
-R2_ACCESS_KEY_ID=2805e41f04f4f72992872ce8cd0941e5
-R2_SECRET_ACCESS_KEY=a5b80e55be0a618389c32c03db5784b2350e2593515b16bc086578c579f15721
-R2_BUCKET=sinna1-0
+REDIS_URL=rediss://default:__REDIS_TOKEN__@__REDIS_HOST__:6379
+R2_ACCOUNT_ID=R2_ACCOUNT_ID
+R2_ACCESS_KEY_ID=R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY=R2_SECRET_ACCESS_KEY
+R2_BUCKET=R2_BUCKET_NAME
 ```
 
-### 🟡 RECOMMENDED VARIABLES (Copy exactly):
+### 🟡 RECOMMENDED VARIABLES (set in the deployment provider):
 ```
-ASSEMBLYAI_API_KEY=e3c8fabeb964421bb79ce122c700b711
+ASSEMBLYAI_API_KEY=ASSEMBLYAI_API_KEY
 OPENAI_API_KEY=your_openai_api_key_here
-CLOUDINARY_URL=cloudinary://<your_api_key>:<your_api_secret>@dhumkzsdp
-SENTRY_DSN=https://a7b2f95a71fdc2aa9380b3f6230d846b@o4510008512544768.ingest.de.sentry.io/4510008525193296
+CLOUDINARY_URL=cloudinary://__API_KEY__:__API_SECRET__@__CLOUD_NAME__
+SENTRY_DSN=https://__PUBLIC_KEY__@oXXXX.ingest.sentry.io/XXXXX
 PROVIDER_CAPTIONS=assemblyai_realtime
 PROVIDER_TTS=openai
 PROVIDER_CAPTIONS_VOD=whisper
 ```
 
-### 🟢 OPTIONAL (Add later when you get them):
+### 🟢 OPTIONAL (set in the deployment provider when enabled):
 ```
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_SECRET_KEY=__STRIPE_SECRET_KEY__
+STRIPE_WEBHOOK_SECRET=__STRIPE_WEBHOOK_SECRET__
 ```
 
 ## Step 5: Wait for Deployment
 
 Render will automatically:
-- Build your application (`npm ci && npm run build`)
+	- Build your application (`pnpm install --frozen-lockfile && pnpm build`)
 - Deploy 2 services: `sinna-api` and `sinna-worker`
 - Run health checks
 - Provide you with a URL like: `https://sinna-api-xyz.onrender.com`
