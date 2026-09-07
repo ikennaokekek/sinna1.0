@@ -101,6 +101,7 @@ export interface JobStatusResponse {
       artifactKey?: string;
       url?: string;
       degraded?: boolean;
+      failedReason?: string;
     };
     ad?: {
       status: 'pending' | 'processing' | 'completed' | 'failed';

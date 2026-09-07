@@ -11,6 +11,8 @@ export default defineConfig({
     exclude: [
       '**/node_modules/**',
       'tests/e2e/**',
+      // Run via: pnpm test:integration
+      'tests/integration/**',
       // Run via: pnpm -C apps/worker test
       'apps/worker/**/*.test.ts',
       // Opt-in: pnpm test:heal (needs live API + TEST_API_KEY)

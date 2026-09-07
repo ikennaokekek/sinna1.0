@@ -32,9 +32,9 @@
   "devDependencies": {
     "@types/node": "^20.8.6",
     "@types/pg": "^8.15.5",
-    "tsx": "^3.14.0",
+    "tsx": "4.23.13",
     "typescript": "^5.2.2",
-    "vitest": "^1.6.0"
+    "vitest": "4.1.11"
   },
   "pnpm": {
     "overrides": {}

@@ -15,13 +15,15 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 vi.mock('@aws-sdk/client-s3', () => ({
-  S3Client: vi.fn().mockImplementation(() => ({
-    send: vi.fn().mockResolvedValue({}),
-  })),
-  PutObjectCommand: vi.fn().mockImplementation((params) => params),
-  GetObjectCommand: vi.fn().mockImplementation((input: { Bucket?: string; Key?: string }) => ({
-    input,
-  })),
+  S3Client: class {
+    send = vi.fn().mockResolvedValue({});
+  },
+  PutObjectCommand: class {
+    constructor(readonly input: unknown) {}
+  },
+  GetObjectCommand: class {
+    constructor(readonly input: { Bucket?: string; Key?: string }) {}
+  },
 }));
 
 vi.mock('../apps/worker/src/lib/r2', () => ({

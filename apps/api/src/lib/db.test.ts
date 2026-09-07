@@ -26,12 +26,13 @@ describe('seedTenantAndApiKey', () => {
     };
 
     vi.mocked(Pool).mockImplementation(
-      () =>
-        ({
+      function () {
+        return {
           connect: vi.fn().mockResolvedValue(mockClient),
           on: vi.fn(),
           end: vi.fn().mockResolvedValue(undefined),
-        }) as unknown as Pool
+        } as unknown as Pool;
+      }
     );
 
     const result = await seedTenantAndApiKey({
@@ -54,12 +55,13 @@ describe('seedTenantAndApiKey', () => {
     };
 
     vi.mocked(Pool).mockImplementation(
-      () =>
-        ({
+      function () {
+        return {
           connect: vi.fn().mockResolvedValue(mockClient),
           on: vi.fn(),
           end: vi.fn().mockResolvedValue(undefined),
-        }) as unknown as Pool
+        } as unknown as Pool;
+      }
     );
 
     await expect(
