@@ -212,13 +212,13 @@ WITH expected_columns(table_name, column_name, data_type, not_null, has_default)
 )
 SELECT
   (SELECT count(*) FROM expected_columns) = (SELECT count(*) FROM actual_columns)
-  AND NOT EXISTS (SELECT 1 FROM expected_columns EXCEPT SELECT * FROM actual_columns)
-  AND NOT EXISTS (SELECT 1 FROM actual_columns EXCEPT SELECT * FROM expected_columns)
-  AND NOT EXISTS (SELECT 1 FROM expected_defaults EXCEPT SELECT * FROM actual_defaults)
-  AND NOT EXISTS (SELECT 1 FROM expected_constraints EXCEPT SELECT * FROM actual_constraints)
-  AND NOT EXISTS (SELECT 1 FROM actual_constraints EXCEPT SELECT * FROM expected_constraints)
-  AND NOT EXISTS (SELECT 1 FROM expected_indexes EXCEPT SELECT * FROM actual_indexes)
-  AND NOT EXISTS (SELECT 1 FROM actual_indexes EXCEPT SELECT * FROM expected_indexes)
+  AND NOT EXISTS (SELECT * FROM expected_columns EXCEPT SELECT * FROM actual_columns)
+  AND NOT EXISTS (SELECT * FROM actual_columns EXCEPT SELECT * FROM expected_columns)
+  AND NOT EXISTS (SELECT * FROM expected_defaults EXCEPT SELECT * FROM actual_defaults)
+  AND NOT EXISTS (SELECT * FROM expected_constraints EXCEPT SELECT * FROM actual_constraints)
+  AND NOT EXISTS (SELECT * FROM actual_constraints EXCEPT SELECT * FROM expected_constraints)
+  AND NOT EXISTS (SELECT * FROM expected_indexes EXCEPT SELECT * FROM actual_indexes)
+  AND NOT EXISTS (SELECT * FROM actual_indexes EXCEPT SELECT * FROM expected_indexes)
   AND (SELECT count(*) FROM pg_constraint WHERE conname = 'tenants_status_check'
        AND conrelid = 'public.tenants'::regclass
        AND contype = 'c' AND convalidated AND NOT condeferrable
