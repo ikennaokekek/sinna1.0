@@ -2,11 +2,12 @@ import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { Pool, PoolClient } from 'pg';
+import { databaseSslConfig } from '@sinna/types';
 
 export const HISTORICAL_MIGRATION_COUNT = 8;
 const ADVISORY_LOCK_ID = '534218477291';
 
-const APPROVED_HISTORICAL_HASHES: Record<string, string> = {
+const APPROVED_MIGRATION_HASHES: Record<string, string> = {
   '001_init.sql': '7d08b33adba265fb9a3864b2c2207dd213d767530891833681ef921c4a73160f',
   '002_add_indexes.sql': '748cbcb1061d92c1be435d08430d3d2cea33c8e0b933e4670d0c5f12d1f1c59f',
   '003_add_stripe_columns.sql': '28f92e1414d062d3759bdc9f9b1ed3f3cb94cf9b84b0451cad84f0242a0812b7',
@@ -15,6 +16,11 @@ const APPROVED_HISTORICAL_HASHES: Record<string, string> = {
   '006_add_updated_at.sql': '8d2205395a9fbb3ccc5be34a90a525b2b40345be0efd68e571fc4317c5786536',
   '007_add_email_column.sql': 'c8de3be49e342003d3bd7fa3ee29583b80cc4eca1379878d13b4c8d454db0b1f',
   '008_verify_schema_for_replit.sql': 'e380927ceff0458b7ad7b971a7269822c5230690b9d74433c42eb9c7c5914334',
+  '009_add_stripe_webhook_event_claims.sql': '6ca92347873b356826adf4bb88f08d97635149779e5910c406f566d0be9041f1',
+  '010_add_worker_job_completions.sql': '8ddf1eb3977f86ff89e9a74bf265f12bdf24625ae0fee4a5492f89233f20d463',
+  '011_harden_stripe_webhook_inbox.sql': 'b786e31c2a04fa56330bbb9fb28b1cd90b37c874ac37024e395ed15dae559c1f',
+  '012_add_stripe_webhook_retry_backoff.sql': 'af6e8c2ecce7ae0dc1366fa6dc287831ca931af65aac2867bedb288764efa195',
+  '013_add_stripe_webhook_requeue_operations.sql': '897884a4d10269c91e3ef04220c2cb1f66a83718b9e7024b8e0470f34f67151a',
 };
 
 export interface Migration {
@@ -64,17 +70,14 @@ export async function discoverMigrations(directory = defaultMigrationsDirectory(
 }
 
 export function assertApprovedHistoricalMigrations(migrations: Migration[]): void {
-  for (let version = 1; version <= HISTORICAL_MIGRATION_COUNT; version++) {
+  for (const [filename, expectedChecksum] of Object.entries(APPROVED_MIGRATION_HASHES)) {
+    const version = Number(filename.slice(0, 3));
     const migration = migrations[version - 1];
-    const filename = `${String(version).padStart(3, '0')}_${[
-      'init', 'add_indexes', 'add_stripe_columns', 'add_api_key_lifecycle',
-      'fix_foreign_keys_cascade', 'add_updated_at', 'add_email_column', 'verify_schema_for_replit',
-    ][version - 1]}.sql`;
     if (!migration || migration.version !== version || migration.filename !== filename) {
-      throw new Error(`Approved historical migration ${filename} is missing or renamed`);
+      throw new Error(`Approved migration ${filename} is missing or renamed`);
     }
-    if (migration.checksum !== APPROVED_HISTORICAL_HASHES[filename]) {
-      throw new Error(`Approved historical migration checksum drift: ${filename}`);
+    if (migration.checksum !== expectedChecksum) {
+      throw new Error(`Approved migration checksum drift: ${filename}`);
     }
   }
 }
@@ -342,6 +345,26 @@ export async function apply(client: Queryable, migrations: Migration[]): Promise
     }
     await client.query('BEGIN');
     try {
+      if (migration.version === 11) {
+        await client.query('LOCK TABLE public.tenants IN SHARE ROW EXCLUSIVE MODE');
+        const preflight = await client.query(`
+          SELECT count(*)::int AS duplicate_count
+            FROM (
+              SELECT stripe_subscription_id
+                FROM public.tenants
+               WHERE stripe_subscription_id IS NOT NULL
+               GROUP BY stripe_subscription_id
+              HAVING count(*) > 1
+            ) duplicates
+        `);
+        const duplicateCount = Number(preflight.rows[0]?.duplicate_count || 0);
+        if (duplicateCount > 0) {
+          throw new Error(
+            `Migration 011 preflight failed: ${duplicateCount} duplicate non-null `
+            + 'stripe_subscription_id value(s); resolve tenant mappings before retrying',
+          );
+        }
+      }
       await client.query(migration.sql);
       await client.query(
         'INSERT INTO public.sinna_core_schema_migrations (version, filename, checksum, disposition) VALUES ($1, $2, $3, $4)',
@@ -361,7 +384,7 @@ export async function runMigrationCommand(command: MigrationCommand, options: { 
   const migrations = await discoverMigrations(options.migrationsDirectory);
   const connectionString = options.connectionString ?? process.env.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is required');
-  const pool = new Pool({ connectionString, max: 1 });
+  const pool = new Pool({ connectionString, ssl: databaseSslConfig(), max: 1 });
   let client: PoolClient | undefined;
   let locked = false;
   try {

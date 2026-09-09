@@ -1,10 +1,44 @@
 import { Pool, PoolClient } from 'pg';
+import { databaseSslConfig, withDeadline } from '@sinna/types';
 
 export interface DatabaseClients {
   pool: Pool;
 }
 
+export interface ConnectionLease {
+  quarantine(error: Error): void;
+  isQuarantined(): boolean;
+}
+
 let cached: DatabaseClients | null = null;
+
+function boundedInteger(
+  value: string | undefined,
+  fallback: number,
+  name: string,
+  min: number,
+  max: number,
+): number {
+  if (value === undefined || value === '') return fallback;
+  if (!/^\d+$/.test(value)) throw new Error(`${name} must be an integer`);
+  const parsed = Number(value);
+  if (parsed < min || parsed > max) {
+    throw new Error(`${name} must be between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+export function databasePoolConfig(env: NodeJS.ProcessEnv = process.env) {
+  const max = boundedInteger(env.DB_POOL_MAX, 5, 'DB_POOL_MAX', 1, 20);
+  const min = boundedInteger(env.DB_POOL_MIN, 0, 'DB_POOL_MIN', 0, max);
+  return {
+    max,
+    min,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 1_500,
+    maxUses: 7_500,
+  };
+}
 
 export function getDb(): DatabaseClients {
   if (cached) return cached;
@@ -12,21 +46,11 @@ export function getDb(): DatabaseClients {
   if (!connectionString) {
     throw new Error('DATABASE_URL is required');
   }
-  const ssl = process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined;
-  // Optimized connection pooling:
-  // - max: Maximum number of clients in the pool (10 is good for most apps)
-  // - min: Minimum number of clients to keep in the pool (2 for better performance)
-  // - idleTimeoutMillis: Close idle clients after 30 seconds
-  // - connectionTimeoutMillis: Wait 5 seconds for connection
-  // - maxUses: Close connections after 7500 uses to prevent memory leaks
+  const ssl = databaseSslConfig();
   const pool = new Pool({
     connectionString,
     ssl,
-    max: 10,
-    min: 2,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5000,
-    maxUses: 7500,
+    ...databasePoolConfig(),
   });
 
   // Add connection pool event handlers for monitoring
@@ -47,14 +71,17 @@ export function getDb(): DatabaseClients {
 }
 
 /** Drop cached pool so the next `getDb()` creates a fresh one (Vitest only). */
-export function resetDbClientsForTests(): void {
+export function resetDbClientsForTests(closePool = true): void {
   if (process.env.VITEST !== 'true') return;
-  try {
-    void cached?.pool.end();
-  } catch {
-    // ignore
-  }
+  const pool = cached?.pool;
   cached = null;
+  if (closePool && pool) {
+    try {
+      void Promise.resolve(pool.end()).catch(() => undefined);
+    } catch {
+      // Test doubles may expose a synchronous end method.
+    }
+  }
 }
 
 /**
@@ -63,14 +90,23 @@ export function resetDbClientsForTests(): void {
  * @returns Result of the function
  */
 export async function withConnection<T>(
-  fn: (client: PoolClient) => Promise<T>
+  fn: (client: PoolClient, lease: ConnectionLease) => Promise<T>
 ): Promise<T> {
   const { pool } = getDb();
   const client = await pool.connect();
+  let quarantineError: Error | undefined;
+  const lease: ConnectionLease = {
+    quarantine(error) {
+      quarantineError ??= error;
+    },
+    isQuarantined() {
+      return quarantineError !== undefined;
+    },
+  };
   try {
-    return await fn(client);
+    return await fn(client, lease);
   } finally {
-    client.release();
+    client.release(quarantineError);
   }
 }
 
@@ -103,10 +139,18 @@ export async function withTransaction<T>(
  * Check if the database pool is healthy
  * @returns true if pool is healthy, false otherwise
  */
-export async function checkPoolHealth(): Promise<boolean> {
+export async function checkPoolHealth(
+  timeoutMs = 2_000,
+  query: () => Promise<{ rows: unknown[] }> = async () => {
+    const result = await getDb().pool.query({
+      text: 'SELECT NOW()',
+      query_timeout: timeoutMs,
+    } as any);
+    return { rows: result.rows };
+  },
+): Promise<boolean> {
   try {
-    const { pool } = getDb();
-    const result = await pool.query('SELECT NOW()');
+    const result = await withDeadline(query(), timeoutMs, 'PostgreSQL health check deadline exceeded');
     return result.rows.length > 0;
   } catch (error) {
     console.error('[DB Health Check] Failed:', error);

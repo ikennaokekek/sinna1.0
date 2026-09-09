@@ -1,13 +1,12 @@
 #!/usr/bin/env tsx
 /**
- * One-command staging/production smoke: create a real job and poll until the API
+ * One-command staging-only smoke: create a real job and poll until the API
  * reports overall status completed or failed (or timeout).
  *
  * Required env:
- *   TEST_API_KEY or API_KEY
- *
- * Base URL (first non-empty):
- *   STAGING_E2E_BASE_URL, E2E_BASE_URL, API_BASE_URL
+ *   STAGING_E2E_BASE_URL
+ *   STAGING_E2E_API_KEY
+ *   STAGING_ALLOWED_HOST (the exact staging hostname)
  *
  * Optional:
  *   TEST_VIDEO_URL — default public sample MP4 (Big Buck Bunny)
@@ -16,8 +15,12 @@
  *   SMOKE_POLL_TIMEOUT_SEC — default 600
  *
  * Example:
- *   STAGING_E2E_BASE_URL=https://api.example.com TEST_API_KEY=sk_... pnpm smoke:staging
+ *   STAGING_E2E_BASE_URL=https://api.staging.example.com \
+ *   STAGING_ALLOWED_HOST=api.staging.example.com \
+ *   STAGING_E2E_API_KEY=... pnpm smoke:staging
  */
+
+import { assertStagingTarget } from './assert-staging-target.mjs';
 
 type JobGetBody = {
   success?: boolean;
@@ -31,28 +34,20 @@ type JobGetBody = {
 
 function requireEnv(name: string, value: string | undefined): string {
   if (!value?.trim()) {
-    console.error(
-      `Missing ${name}. Set TEST_API_KEY or API_KEY, and STAGING_E2E_BASE_URL (or E2E_BASE_URL / API_BASE_URL).`
-    );
+    console.error(`Missing required staging environment variable: ${name}.`);
     process.exit(1);
   }
   return value.trim();
 }
 
 function baseUrl(): string {
-  const u =
-    process.env.STAGING_E2E_BASE_URL ||
-    process.env.E2E_BASE_URL ||
-    process.env.API_BASE_URL ||
-    '';
-  return requireEnv('base URL (STAGING_E2E_BASE_URL | E2E_BASE_URL | API_BASE_URL)', u).replace(
-    /\/$/,
-    ''
-  );
+  const url = requireEnv('STAGING_E2E_BASE_URL', process.env.STAGING_E2E_BASE_URL);
+  const allowedHost = requireEnv('STAGING_ALLOWED_HOST', process.env.STAGING_ALLOWED_HOST);
+  return assertStagingTarget(url, allowedHost).toString().replace(/\/$/, '');
 }
 
 function apiKey(): string {
-  return requireEnv('TEST_API_KEY or API_KEY', process.env.TEST_API_KEY || process.env.API_KEY);
+  return requireEnv('STAGING_E2E_API_KEY', process.env.STAGING_E2E_API_KEY);
 }
 
 const TEST_VIDEO_URL =

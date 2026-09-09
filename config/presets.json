@@ -159,13 +159,12 @@
     "motionReduce": false,
     "strobeReduce": true,
     "speed": 1.0,
-    "adEnabled": true,
+    "adEnabled": false,
     "subtitleFormats": ["vtt", "srt", "ttml"],
     "videoTransform": true,
     "videoTransformConfig": {
       "flashReduce": true,
-      "brightness": -0.05,
-      "contrast": -0.1
+      "flashRiskEvidence": true
     }
   },
   "epilepsy_noise": {
@@ -176,12 +175,13 @@
     "motionReduce": false,
     "strobeReduce": true,
     "speed": 1.0,
-    "adEnabled": true,
+    "adEnabled": false,
     "subtitleFormats": ["vtt", "srt", "ttml"],
     "videoTransform": true,
     "videoTransformConfig": {
       "audioSmooth": true,
-      "lowPassFilter": true
+      "lowPassFilter": true,
+      "audioRiskEvidence": true
     }
   },
   "cognitive_load": {

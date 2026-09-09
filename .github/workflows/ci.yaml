@@ -7,35 +7,37 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Local integration/E2E uses Postgres + Redis service containers (no cloud secrets required for PRs).
-# Optional remote smoke: set repository variable ENABLE_REMOTE_E2E=true and add secrets:
-#   STAGING_E2E_BASE_URL — e.g. https://your-staging-api.example.com
-#   TEST_API_KEY — valid key for that environment (same value can be used as API_KEY)
-# Local one-command real job + poll (uses same env names): pnpm smoke:staging
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10.26.1
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'pnpm'
-
-      - name: Install deps
+          cache: pnpm
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Build
         run: pnpm build
-
       - name: Unit tests (API, root Vitest, worker)
         run: pnpm test:unit
+      - name: Core infrastructure contract
+        run: pnpm test:core-infra
+      - name: Core API Autoscale contract
+        run: pnpm test:core-api-autoscale
+      - name: Core worker Reserved VM contract
+        run: pnpm test:core-worker-vm
 
   integration-e2e-local:
     needs: [build]
@@ -47,7 +49,6 @@ jobs:
       PORT: 4000
       NODE_ENV: test
       JWT_SECRET: ci-jwt-secret-not-for-production
-      # API boots without real cloud keys in NODE_ENV=test
       STRIPE_SECRET_KEY: sk_test_ci_placeholder
       STRIPE_WEBHOOK_SECRET: whsec_ci_placeholder
     services:
@@ -57,53 +58,45 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
-        ports:
-          - 5432:5432
+        ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-interval 10s --health-timeout 5s --health-retries 5
       redis:
         image: redis:7
-        ports:
-          - 6379:6379
+        ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
+          --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10.26.1
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'pnpm'
-
-      - name: Install deps
+          cache: pnpm
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Build
         run: pnpm build
-
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
-      - name: Bootstrap and verify fresh DB migrations
+      - name: Step 9 disposable PostgreSQL adversarial tests
+        env:
+          TEST_MIGRATION_DATABASE_URL: ${{ env.DATABASE_URL }}
+          CONFIRM_DISPOSABLE_MIGRATION_DATABASE: YES
+          DATABASE_SSL_MODE: disable
+        run: pnpm test:migrate:integration
+      - name: Bootstrap, apply, and verify fresh DB migrations
         run: |
           set -euo pipefail
-          # Bootstrap alone may execute 001-008, and only on this empty
-          # disposable database. Apply then handles 009+.
+          # This disposable database starts empty. Bootstrap is intentionally
+          # followed by apply and verification; application startup never migrates.
           pnpm migrate:bootstrap
           pnpm migrate:apply
           pnpm migrate:verify
-
       - name: Seed CI tenant and API key
         run: |
           set -euo pipefail
@@ -113,7 +106,6 @@ jobs:
             | tr -d '[:space:]')
           psql "$DATABASE_URL" -c \
             "insert into api_keys(key_hash, tenant_id) values ('$H', '$TENANT_ID');"
-
       - name: Start API
         run: |
           nohup node apps/api/dist/index.js > api.log 2>&1 &
@@ -124,10 +116,8 @@ jobs:
             cat api.log
             exit 1
           fi
-
       - name: Wait for API
         run: bash scripts/wait-for-api.sh "http://127.0.0.1:${PORT}" 90
-
       - name: Start minimal queue workers (BullMQ)
         run: |
           nohup node -e "
@@ -139,7 +129,6 @@ jobs:
             setInterval(() => {}, 1 << 30);
           " > worker.log 2>&1 &
           echo $! > worker.pid
-
       - name: Vitest integration smoke (live HTTP)
         env:
           E2E_BASE_URL: http://127.0.0.1:4000
@@ -147,21 +136,17 @@ jobs:
           TEST_API_KEY: ${{ env.CI_TEST_API_KEY }}
           API_KEY: ${{ env.CI_TEST_API_KEY }}
         run: pnpm test:integration
-
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
-
       - name: Playwright E2E (health)
         env:
           E2E_BASE_URL: http://127.0.0.1:4000
           API_KEY: ${{ env.CI_TEST_API_KEY }}
         run: pnpm test:e2e
-
       - name: API package unit tests (with DB)
         env:
           DATABASE_URL: ${{ env.DATABASE_URL }}
         run: pnpm -C apps/api test
-
       - name: Stop API and workers
         if: always()
         run: |
@@ -173,60 +158,55 @@ jobs:
           done
           if [ -f api.log ]; then echo "--- api.log ---"; tail -n 80 api.log; fi
 
-  # Runs only when repo variable ENABLE_REMOTE_E2E is set to the string "true".
-  # Configure secrets: STAGING_E2E_BASE_URL, TEST_API_KEY (must match a valid key on that deployment).
-  integration-e2e-remote:
-    if: vars.ENABLE_REMOTE_E2E == 'true'
+  integration-e2e-staging:
+    needs: [build, integration-e2e-local]
+    # A staging-only opt-in: main pushes or a manual dispatch, never pull requests.
+    if: >-
+      vars.ENABLE_STAGING_E2E == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    environment: staging
+    env:
+      STAGING_E2E_BASE_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
+      STAGING_E2E_API_KEY: ${{ secrets.STAGING_E2E_API_KEY }}
+      STAGING_ALLOWED_HOST: ${{ vars.STAGING_ALLOWED_HOST }}
     steps:
-      - name: Require staging secrets
-        env:
-          STAGING_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
-          STAGING_KEY: ${{ secrets.TEST_API_KEY }}
-        run: |
-          if [ -z "$STAGING_URL" ] || [ -z "$STAGING_KEY" ]; then
-            echo "ENABLE_REMOTE_E2E is true but STAGING_E2E_BASE_URL or TEST_API_KEY is empty."
-            echo "Add both as repository secrets (Settings → Secrets and variables → Actions)."
-            exit 1
-          fi
-
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10.26.1
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'pnpm'
-
-      - name: Install deps
+          cache: pnpm
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Vitest integration smoke (staging)
-        env:
-          E2E_BASE_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
-          API_BASE_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
-          TEST_API_KEY: ${{ secrets.TEST_API_KEY }}
-          API_KEY: ${{ secrets.TEST_API_KEY }}
-        run: pnpm test:integration
-
+      - name: Validate staging target (fail closed)
+        run: node scripts/assert-staging-target.mjs
+      - name: Staging integration smoke
+        run: pnpm smoke:staging
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
+      - name: Playwright E2E (staging only)
+        run: pnpm test:e2e --reporter=html
+      - name: Upload staging E2E diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-e2e-diagnostics-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            playwright-report/
+            test-results/
+            *.log
 
-      - name: Playwright E2E (staging)
-        env:
-          E2E_BASE_URL: ${{ secrets.STAGING_E2E_BASE_URL }}
-          API_KEY: ${{ secrets.TEST_API_KEY }}
-        run: pnpm test:e2e
-
-  deploy-notify:
+  ci-eligibility-note:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [build, integration-e2e-local]
     runs-on: ubuntu-latest
     steps:
-      - name: Render auto-deploy note
+      - name: Record CI eligibility only
         run: |
-          echo "Build and integration-e2e-local passed."
-          echo "If this repo is connected to Render, main will deploy automatically."
+          echo "Successful main CI does not deploy."
+          echo "This revision is eligible for staging and manual production promotion."

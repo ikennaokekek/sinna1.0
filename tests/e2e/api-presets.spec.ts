@@ -4,9 +4,9 @@ import * as path from 'path';
 
 /**
  * Deep E2E: create a job for every preset, poll to terminal state, validate artifacts.
- * Requires API_KEY / TEST_API_KEY and a running API.
+ * Requires STAGING_E2E_API_KEY (or local API_KEY / TEST_API_KEY) and a running API.
  */
-const API_KEY = process.env.API_KEY || process.env.TEST_API_KEY;
+const API_KEY = process.env.STAGING_E2E_API_KEY || process.env.API_KEY || process.env.TEST_API_KEY;
 const SAMPLE_VIDEO =
   process.env.E2E_SAMPLE_VIDEO_URL ||
   'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';

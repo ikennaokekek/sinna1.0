@@ -15,7 +15,7 @@
     "migrate:baseline": "pnpm migrate baseline --through 008 --confirm-baseline",
     "migrate:bootstrap": "pnpm migrate bootstrap",
     "migrate:apply": "pnpm migrate apply",
-    "test:migrate:integration": "vitest run src/lib/migrationLedger.integration.test.ts",
+    "test:migrate:integration": "vitest run --maxWorkers=1 --fileParallelism=false src/lib/migrationLedger.integration.test.ts src/lib/stripeWebhookPostgres.integration.test.ts",
     "seed": "node dist/scripts/seed.js"
   },
   "dependencies": {

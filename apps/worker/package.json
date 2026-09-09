@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "NODE_OPTIONS='--max-old-space-size=2048' tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "readiness": "node dist/readiness.js",
     "test": "vitest run"
   },
   "dependencies": {

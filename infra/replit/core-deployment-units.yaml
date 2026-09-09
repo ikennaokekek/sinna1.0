@@ -1,0 +1,48 @@
+# Repository contract only. This file does not create or configure live deployments.
+# Both units are independently configured and promoted from the same approved SHA.
+contractVersion: 1
+provider: replit
+liveDeploymentMutation: false
+projectIsolation: dedicated-replit-project-per-unit
+promotion:
+  sourceRevision: approved-full-sha
+  sameRevisionForAllUnits: true
+  runtimeRevisionVariable: REVISION
+  requiredStagingCheck: integration-e2e-staging
+  stagingCheckRevisionMatch: exact
+units:
+  - name: core-api
+    target: autoscale
+    publicIngress: true
+    portEnvironment: PORT
+    livenessPath: /health
+    readinessPath: /readiness
+    buildCommand: bash infra/replit/build-core-api.sh
+    runCommand: bash infra/replit/run-core-api.sh
+    dependencies:
+      - postgresql
+      - redis
+      - s3-compatible-object-store
+    secretGroups:
+      - core-api-runtime
+      - core-sync-verifier
+  - name: core-worker
+    target: vm
+    vmClass: Reserved VM
+    alwaysOn: true
+    publicIngress: false
+    readinessCommand: node apps/worker/dist/readiness.js
+    queueNamespaceEnvironment: QUEUE_PREFIX
+    runtimeContract: infra/replit/core-worker-reserved-vm.yaml
+    buildCommand: bash infra/replit/build-core-worker.sh
+    runCommand: bash infra/replit/run-core-worker.sh
+    dependencies:
+      - postgresql
+      - redis
+      - s3-compatible-object-store
+      - media-processors
+    secretGroups:
+      - core-worker-runtime
+      - core-worker-providers
+excludedServices:
+  - onboarding

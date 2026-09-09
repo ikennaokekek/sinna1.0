@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { Queue } from 'bullmq';
+import { FlowProducer, Queue } from 'bullmq';
 import * as fs from 'fs';
 import * as path from 'path';
 import crypto from 'crypto';
@@ -13,12 +13,15 @@ import { performanceMonitor } from '../lib/logger';
 import { redisConnection } from '../lib/redis';
 import IORedis from 'ioredis';
 import { UnsafeUrlError, validateExternalHttpUrl } from '../lib/ssrf';
+import { coreQueuePrefix, coreQueueRetryOptions } from '@sinna/types';
+import { createTransformFlow } from '../lib/transformFlow';
 
 interface Queues {
   captions: Queue;
   ad: Queue;
   color: Queue;
   videoTransform: Queue;
+  flow: FlowProducer;
 }
 
 export function isTenantArtifactKey(key: string, tenantId: string): boolean {
@@ -38,14 +41,14 @@ const BUILTIN_PRESETS: Record<string, PresetConfig> = {
   blindness: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'standard', motionReduce: false, videoTransform: true, videoTransformConfig: { audioDescription: true } },
   deaf: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'descriptive', burnIn: true, adEnabled: false, speed: 1.0, colorProfile: 'standard', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { captionOverlay: true, volumeBoost: true } },
   color_blindness: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'colorblind-safe', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { colorProfile: 'colorblind-safe', filter: 'e_colorblind_correction' } },
-  epilepsy_flash: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'low-contrast', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { flashReduce: true, brightness: -0.05, contrast: -0.1 } },
-  epilepsy_noise: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: true, speed: 1.0, colorProfile: 'standard', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { audioSmooth: true, lowPassFilter: true } },
+  epilepsy_flash: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: false, speed: 1.0, colorProfile: 'low-contrast', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { flashReduce: true, flashRiskEvidence: true } },
+  epilepsy_noise: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'default', adEnabled: false, speed: 1.0, colorProfile: 'standard', motionReduce: false, strobeReduce: true, videoTransform: true, videoTransformConfig: { audioSmooth: true, lowPassFilter: true, audioRiskEvidence: true } },
   cognitive_load: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'simplified', adEnabled: true, speed: 0.95, colorProfile: 'standard', motionReduce: true, strobeReduce: true, videoTransform: true, videoTransformConfig: { simplifiedText: true, focusHighlight: true } },
 };
 
 export function registerJobRoutes(
   app: FastifyInstance,
-  queues: Queues,
+  queues: Queues | null,
   redis: IORedis | null,
   queueDepth: { labels: (labels: { queue: string }) => { set: (value: number) => void } },
   failuresTotal: { labels: (labels: { type: string }) => { inc: () => void } }
@@ -128,6 +131,14 @@ export function registerJobRoutes(
     }
   }, async (req: FastifyRequest, res: FastifyReply) => {
     const perfId = performanceMonitor.start('create_job', (req as AuthenticatedRequest).requestId);
+    if (!queues || !redis) {
+      performanceMonitor.end(perfId);
+      return res.code(503).send({
+        success: false,
+        error: ErrorCodes.SERVICE_UNAVAILABLE,
+        message: 'Job processing is unavailable because the queue service is not ready',
+      });
+    }
     
     try {
       const Body = z.object({
@@ -199,7 +210,7 @@ export function registerJobRoutes(
       const idemKey = crypto.createHash('sha256')
         .update(`${body.source_url}|${body.preset_id || ''}|${resolvedLanguage}|${tenantId}`)
         .digest('hex');
-      const idemCacheKey = `jobs:idempotency:${idemKey}`;
+      const idemCacheKey = `${coreQueuePrefix()}:jobs:idempotency:${idemKey}`;
       
       let existing: string | null = null;
       if (redis) {
@@ -259,8 +270,7 @@ export function registerJobRoutes(
       // Atomic job enqueueing: if any queue fails, rollback usage counter
       let jobBundle: JobBundle;
       try {
-        // enqueue pipeline: captions -> ad -> color
-        const captionJob = await queues.captions.add('generate-subtitles', {
+        const captionData = {
           videoUrl: body.source_url,
           language: languageCode, // Use base language code (e.g., 'en', 'zh', 'fr')
           languageFull: resolvedLanguage, // Store full language code (e.g., 'en-US', 'zh-CN') for reference
@@ -270,9 +280,9 @@ export function registerJobRoutes(
           burnIn: !!presetCfg.burnIn,
           tenantId,
           userId: tenantId,
-        });
+        };
 
-        const adJob = await queues.ad.add('generate-audio-description', {
+        const adData = {
           videoUrl: body.source_url,
           language: languageCode, // Use base language code
           languageFull: resolvedLanguage, // Store full language code for reference
@@ -280,44 +290,54 @@ export function registerJobRoutes(
           speed: presetCfg.speed || 1.0,
           tenantId,
           userId: tenantId,
-          dependsOn: captionJob.id,
-        });
+        };
 
-        const colorJob = await queues.color.add('analyze-colors', {
+        const colorData = {
           videoUrl: body.source_url,
           colorProfile: presetCfg.colorProfile,
           motionReduce: !!presetCfg.motionReduce,
           strobeReduce: !!presetCfg.strobeReduce,
           tenantId,
           userId: tenantId,
-          dependsOn: adJob.id,
-        });
+        };
 
-        // Add video transformation job if preset requires it
+        let captionJobId: string;
+        let adJobId: string;
+        let colorJobId: string;
         let videoTransformJobId: string | undefined = undefined;
         if (presetCfg.videoTransform && presetCfg.videoTransformConfig) {
-          const videoTransformJob = await queues.videoTransform.add('transform-video', {
+          const transformFlow = createTransformFlow({
             videoUrl: body.source_url,
             tenantId,
             presetId: preset,
             transformConfig: presetCfg.videoTransformConfig,
-            // Pass job IDs for accessing artifacts
-            adJobId: adJob.id,
-            captionJobId: captionJob.id,
-          }, {
-            // Note: BullMQ doesn't support dependsOn in JobsOptions, jobs run independently
-            // Dependencies are handled by checking job status in the worker
+            captionData,
+            adData,
+            colorData,
           });
-          videoTransformJobId = videoTransformJob.id ? String(videoTransformJob.id) : undefined;
+          const flow = await queues.flow.add(transformFlow.definition);
+          captionJobId = transformFlow.childIds.captions;
+          adJobId = transformFlow.childIds.ad;
+          colorJobId = transformFlow.childIds.color;
+          videoTransformJobId = flow.job.id ? String(flow.job.id) : undefined;
+        } else {
+          const [captionJob, adJob, colorJob] = await Promise.all([
+            queues.captions.add('generate-subtitles', captionData),
+            queues.ad.add('generate-audio-description', adData),
+            queues.color.add('analyze-colors', colorData),
+          ]);
+          captionJobId = String(captionJob.id!);
+          adJobId = String(adJob.id!);
+          colorJobId = String(colorJob.id!);
         }
 
         jobBundle = {
-          id: String(captionJob.id!),
+          id: captionJobId,
           tenantId,
           steps: {
-            captions: String(captionJob.id!),
-            ad: String(adJob.id!),
-            color: String(colorJob.id!),
+            captions: captionJobId,
+            ad: adJobId,
+            color: colorJobId,
             ...(videoTransformJobId ? { videoTransform: videoTransformJobId } : {}),
           },
           preset,
@@ -463,6 +483,8 @@ export function registerJobRoutes(
                         status: { type: 'string' },
                         artifactKey: { type: 'string' },
                         url: { type: 'string' },
+                        evidenceArtifactKey: { type: 'string' },
+                        evidenceUrl: { type: 'string' },
                         cloudinaryUrl: { type: 'string' }
                       }
                     }
@@ -492,6 +514,14 @@ export function registerJobRoutes(
     }
   }, async (req: FastifyRequest, res: FastifyReply) => {
     const perfId = performanceMonitor.start('get_job_status', (req as AuthenticatedRequest).requestId);
+    if (!queues || !redis) {
+      performanceMonitor.end(perfId);
+      return res.code(503).send({
+        success: false,
+        error: ErrorCodes.SERVICE_UNAVAILABLE,
+        message: 'Job processing is unavailable because the queue service is not ready',
+      });
+    }
     
     try {
       const Params = z.object({ id: z.string() });
@@ -503,11 +533,7 @@ export function registerJobRoutes(
       }
 
       // Try idempotency cache first
-      if (!redis) {
-        return res.code(404).send({ success: false, error: ErrorCodes.NOT_FOUND });
-      }
-      
-      const prefix = 'jobs:idempotency:';
+      const prefix = `${coreQueuePrefix()}:jobs:idempotency:`;
       const stream = redis.scanStream({ match: `${prefix}*` });
       let bundle: JobBundle | null = null;
       
@@ -578,6 +604,7 @@ export function registerJobRoutes(
           videoTransform: {
             status: vtCompleted ? 'completed' : vtFailed ? 'failed' : 'pending',
             artifactKey: vtCompleted ? (vt.returnvalue as any)?.artifactKey : undefined,
+            evidenceArtifactKey: vtCompleted ? (vt.returnvalue as any)?.evidenceArtifactKey : undefined,
             cloudinaryUrl: vtCompleted ? (vt.returnvalue as any)?.cloudinaryUrl : undefined,
             degraded: vtCompleted ? !!(vt.returnvalue as any)?.degraded : undefined,
           },
@@ -625,6 +652,13 @@ export function registerJobRoutes(
       }
       if (status.videoTransform?.status === 'completed' && status.videoTransform.artifactKey && ownedArtifactKey(status.videoTransform.artifactKey)) {
         status.videoTransform.url = await getSignedGetUrl(status.videoTransform.artifactKey);
+      }
+      if (
+        status.videoTransform?.status === 'completed'
+        && status.videoTransform.evidenceArtifactKey
+        && ownedArtifactKey(status.videoTransform.evidenceArtifactKey)
+      ) {
+        status.videoTransform.evidenceUrl = await getSignedGetUrl(status.videoTransform.evidenceArtifactKey);
       }
 
       performanceMonitor.end(perfId);

@@ -1,0 +1,125 @@
+name: Production promotion gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Full 40-character commit SHA to approve
+        required: true
+        type: string
+      confirmation:
+        description: Type PROMOTE_TO_PRODUCTION to confirm this approval gate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  checks: read
+
+concurrency:
+  group: production-promotion
+  cancel-in-progress: false
+
+jobs:
+  verify-staging-revision:
+    if: github.ref == "refs/heads/main"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation and revision format
+        env:
+          REVISION: ${{ inputs.revision }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          [ "$CONFIRMATION" = "PROMOTE_TO_PRODUCTION" ] || { echo "Confirmation is incorrect."; exit 1; }
+          [[ "$REVISION" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "Revision must be a full 40-character SHA."; exit 1; }
+      - name: Checkout repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify revision belongs to main and check it out exactly
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          REVISION=$(printf '%s' "$REVISION" | tr 'A-F' 'a-f')
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git cat-file -e "${REVISION}^{commit}" || {
+            echo "Requested revision is not an available commit."
+            exit 1
+          }
+          git merge-base --is-ancestor "$REVISION" refs/remotes/origin/main || {
+            echo "Requested revision is not reachable from origin/main."
+            exit 1
+          }
+          git checkout --detach "$REVISION"
+          [ "$(git rev-parse HEAD)" = "$(printf '%s' "$REVISION" | tr 'A-F' 'a-f')" ] || {
+            echo "Requested revision did not resolve to the checked out commit."
+            exit 1
+          }
+      - name: Require successful staging validation for this exact revision
+        uses: actions/github-script@v7
+        env:
+          REVISION: ${{ inputs.revision }}
+        with:
+          script: |
+            const revision = process.env.REVISION.toLowerCase();
+            const { data } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: revision,
+              filter: 'latest',
+              per_page: 100,
+            });
+            const staging = data.check_runs.find((check) =>
+              check.name === 'integration-e2e-staging' &&
+              check.head_sha.toLowerCase() === revision &&
+              check.conclusion === 'success'
+            );
+            if (!staging) {
+              core.setFailed(`Revision ${revision} has no successful integration-e2e-staging check.`);
+            }
+  approve-revision:
+    needs: verify-staging-revision
+    if: github.ref == "refs/heads/main"
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout approved revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Unit tests
+        run: pnpm test:unit
+      - name: Core infrastructure contract
+        run: pnpm test:core-infra
+      - name: Core API Autoscale contract
+        run: pnpm test:core-api-autoscale
+      - name: Core worker Reserved VM contract
+        run: pnpm test:core-worker-vm
+      - name: Record approval evidence (no deployment or migrations)
+        if: always()
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          {
+            echo "## Production promotion gate"
+            echo ""
+            echo "- Requested revision: \`$REVISION\`"
+            echo "- Checked-out revision: \`$(git rev-parse HEAD 2>/dev/null || echo unavailable)\`"
+            echo "- Build and unit-test result: \`${{ job.status }}\`"
+            echo "- This workflow performed **no deployment** and **no migrations**."
+            echo "- It is a protected approval and traceability gate only."
+          } >> "$GITHUB_STEP_SUMMARY"

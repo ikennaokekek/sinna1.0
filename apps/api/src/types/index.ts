@@ -122,6 +122,8 @@ export interface JobStatusResponse {
       url?: string;
       cloudinaryUrl?: string;
       degraded?: boolean;
+      evidenceArtifactKey?: string;
+      evidenceUrl?: string;
     };
   };
   preset: string;
@@ -158,6 +160,8 @@ export interface PresetConfig {
     lowPassFilter?: boolean;
     simplifiedText?: boolean;
     focusHighlight?: boolean;
+    flashRiskEvidence?: boolean;
+    audioRiskEvidence?: boolean;
   };
 }
 

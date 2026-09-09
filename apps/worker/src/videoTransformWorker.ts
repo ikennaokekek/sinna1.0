@@ -7,8 +7,47 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { downloadExternalMedia, safeExternalFetch } from './lib/ssrf';
+import {
+  AudioDynamicsMetrics,
+  FlashRiskMetrics,
+  measureAudioDynamics,
+  measureFlashRisk,
+} from './epilepsyEvidence';
+import {
+  buildEpilepsyNoiseAudioFilters,
+  encodeEpilepsyNoiseWithTruePeakGate,
+  EPILEPSY_NOISE_INITIAL_LIMIT_DBFS,
+  EPILEPSY_NOISE_TRUE_PEAK_CEILING_DBTP,
+  measureEncodedTruePeakDbtp,
+} from './epilepsyNoiseAudio';
 
 const execAsync = util.promisify(exec);
+const VIDEO_TRANSFORM_TIMEOUT_MS = 120_000;
+
+type TransformEvidence =
+  | {
+      kind: 'flash-risk-proxy';
+      before: FlashRiskMetrics;
+      after: FlashRiskMetrics;
+      improvement: {
+        maxLuminanceDeltaReduction: number;
+        rapidHighDeltaTransitionReduction: number;
+      };
+      disclaimer: string;
+    }
+  | {
+      kind: 'audio-dynamics';
+      before: AudioDynamicsMetrics;
+      after: AudioDynamicsMetrics;
+      improvement: {
+        shortWindowRmsRangeReductionDb: number;
+        peakReductionDb: number;
+      };
+      encodedTruePeakCeilingDbtp: number;
+      encodedTruePeakDbtp: number;
+      encodeAttempts: number;
+      disclaimer: string;
+    };
 
 interface VideoTransformJobData {
   videoUrl: string;
@@ -33,6 +72,8 @@ interface VideoTransformJobData {
     lowPassFilter?: boolean;
     simplifiedText?: boolean;
     focusHighlight?: boolean;
+    flashRiskEvidence?: boolean;
+    audioRiskEvidence?: boolean;
   };
   adJobId?: string | number; // For accessing audio description artifact
   captionJobId?: string | number; // For accessing caption artifact
@@ -69,11 +110,6 @@ async function transformWithCloudinary(
     });
 
     const transformations: any[] = [];
-
-    // Color blindness corrections
-    if (transformConfig?.colorProfile === 'colorblind-safe' || transformConfig?.filter === 'e_colorblind_correction') {
-      transformations.push({ effect: 'colorblind_correction' });
-    }
 
     // Motion reduction
     if (transformConfig?.motionReduce) {
@@ -184,11 +220,6 @@ async function transformWithCloudinaryRest(
   cloudName: string
 ): Promise<string> {
   const transformations: string[] = [];
-
-  // Color blindness corrections
-  if (transformConfig?.colorProfile === 'colorblind-safe' || transformConfig?.filter === 'e_colorblind_correction') {
-    transformations.push('e_colorblind_correction');
-  }
 
   // Motion reduction
   if (transformConfig?.motionReduce) {
@@ -308,46 +339,43 @@ async function transformWithFFmpeg(
   adJobId?: string | number,
   captionJobId?: string | number,
   tenantId?: string
-): Promise<Buffer> {
+): Promise<{ videoBuffer: Buffer; evidence?: TransformEvidence }> {
   console.log('🔄 Using FFmpeg fallback for video transformation');
 
-  // Download video to temp file
-  const tempDir = os.tmpdir();
-  const inputPath = path.join(tempDir, `sinna-input-${Date.now()}.mp4`);
-  const outputPath = path.join(tempDir, `sinna-output-${Date.now()}.mp4`);
-  const adPath = adJobId ? path.join(tempDir, `sinna-ad-${Date.now()}.mp3`) : null;
-  const captionPath = captionJobId ? path.join(tempDir, `sinna-captions-${Date.now()}.vtt`) : null;
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sinna-transform-'));
+  const inputPath = path.join(tempDir, 'input.mp4');
+  const outputPath = path.join(tempDir, 'output.mp4');
+  const adPath = adJobId ? path.join(tempDir, 'audio-description.mp3') : null;
+  const captionPath = captionJobId ? path.join(tempDir, 'captions.vtt') : null;
 
   try {
     // Download video
     const { body: videoBuffer } = await downloadExternalMedia(inputUrl);
     fs.writeFileSync(inputPath, videoBuffer);
+    const flashBefore = transformConfig?.flashRiskEvidence
+      ? await measureFlashRisk(inputPath)
+      : undefined;
+    const audioBefore = transformConfig?.audioRiskEvidence
+      ? await measureAudioDynamics(inputPath)
+      : undefined;
 
     // Download audio description if needed for blindness preset
     if (transformConfig?.audioDescription && adJobId && tenantId) {
-      try {
-        const adKey = `artifacts/${tenantId}/${adJobId}.mp3`;
-        const adBuffer = await downloadFromR2(adKey);
-        if (adPath) {
-          fs.writeFileSync(adPath, adBuffer);
-          console.log('✅ Downloaded audio description for mixing');
-        }
-      } catch (error) {
-        console.warn('Failed to download audio description, continuing without it:', error);
+      const adKey = `artifacts/${tenantId}/${adJobId}.mp3`;
+      const adBuffer = await downloadFromR2(adKey);
+      if (adPath) {
+        fs.writeFileSync(adPath, adBuffer);
+        console.log('✅ Downloaded audio description for mixing');
       }
     }
 
     // Download captions if needed for deaf preset (caption overlay)
     if (transformConfig?.captionOverlay && captionJobId && tenantId) {
-      try {
-        const captionKey = `artifacts/${tenantId}/${captionJobId}.vtt`;
-        const captionBuffer = await downloadFromR2(captionKey);
-        if (captionPath) {
-          fs.writeFileSync(captionPath, captionBuffer);
-          console.log('✅ Downloaded captions for overlay');
-        }
-      } catch (error) {
-        console.warn('Failed to download captions, continuing without overlay:', error);
+      const captionKey = `artifacts/${tenantId}/${captionJobId}.vtt`;
+      const captionBuffer = await downloadFromR2(captionKey);
+      if (captionPath) {
+        fs.writeFileSync(captionPath, captionBuffer);
+        console.log('✅ Downloaded captions for overlay');
       }
     }
 
@@ -362,14 +390,17 @@ async function transformWithFFmpeg(
 
     // Flash reduction
     if (transformConfig?.flashReduce || transformConfig?.strobeReduce) {
-      filters.push('minterpolate');
       filters.push('fps=24');
-      filters.push('eq=brightness=-0.05:saturation=0.8');
+      filters.push("tmix=frames=5:weights='1 2 3 2 1'");
+      filters.push('eq=contrast=0.85:saturation=0.9');
     }
 
-    // Color blindness correction
+    // Color blindness correction. This matrix is handled by FFmpeg because
+    // Cloudinary's former colorblind_correction effect is not valid for video.
     if (transformConfig?.colorProfile === 'colorblind-safe') {
-      filters.push('colorchannelmixer=.7:.3:0:0:.7:.3:0:0:.3:.7');
+      filters.push(
+        'colorchannelmixer=rr=0.8:rg=0.2:gr=0.258:gg=0.742:br=0:bg=0.142:bb=0.858',
+      );
     }
 
     // Motion reduction
@@ -445,17 +476,33 @@ async function transformWithFFmpeg(
     
     // Low-pass audio filter for noise-triggered epilepsy
     if (transformConfig?.lowPassFilter) {
-      // Low-pass filter: cutoff frequency at 8000Hz to reduce high-frequency noise
-      audioFilterChain.push('lowpass=f=8000');
+      audioFilterChain.push('highpass=f=80');
+      audioFilterChain.push('lowpass=f=12000');
     }
     
+    const isEpilepsyNoiseAudio = Boolean(
+      transformConfig?.audioRiskEvidence
+      && transformConfig?.audioSmooth
+      && transformConfig?.lowPassFilter,
+    );
+
     // Audio smoothing for noise-triggered epilepsy
     if (transformConfig?.audioSmooth) {
-      if (!audioFilterChain.includes('lowpass=f=8000')) {
-        audioFilterChain.push('lowpass=f=8000');
+      if (isEpilepsyNoiseAudio) {
+        audioFilterChain.splice(0, audioFilterChain.length);
+        audioFilterChain.push(...buildEpilepsyNoiseAudioFilters(EPILEPSY_NOISE_INITIAL_LIMIT_DBFS));
+      } else {
+        if (!audioFilterChain.includes('highpass=f=80')) {
+          audioFilterChain.push('highpass=f=80');
+        }
+        if (!audioFilterChain.includes('lowpass=f=12000')) {
+          audioFilterChain.push('lowpass=f=12000');
+        }
+        audioFilterChain.push('acompressor=threshold=0.125:ratio=4:attack=5:release=150:makeup=1.5');
+        audioFilterChain.push('dynaudnorm=f=150:g=9:p=0.7:m=4:r=0.3');
+        audioFilterChain.push('alimiter=limit=0.8:attack=5:release=50');
+        audioFilterChain.push('loudnorm=I=-18:LRA=7:TP=-1.5');
       }
-      audioFilterChain.push('highpass=f=60'); // Remove very low frequencies
-      audioFilterChain.push('volume=0.95'); // Slight volume reduction to smooth peaks
     }
     
     // Speed adjustment (audio tempo)
@@ -464,66 +511,128 @@ async function transformWithFFmpeg(
     }
     
     // Build final audio filter
-    const finalAudioFilter = audioFilterChain.length > 0 
-      ? `-af "${audioFilterChain.join(',')}"` 
-      : '-c:a copy';
-    
-    const cmd = `ffmpeg -y -i "${inputPath}" ${audioInputs}${filterString} ${finalAudioFilter} "${outputPath}"`;
+    let encodedTruePeakDbtp: number | undefined;
+    let encodeAttempts = 1;
+    const encode = async (attemptAudioFilters: string[]): Promise<void> => {
+      const finalAudioFilter = attemptAudioFilters.length > 0
+        ? `-af "${attemptAudioFilters.join(',')}"`
+        : '-c:a copy';
+      const outputAudioRate = isEpilepsyNoiseAudio ? '-ar 48000' : '';
+      const cmd = `ffmpeg -y -i "${inputPath}" ${audioInputs}${filterString} ${finalAudioFilter} ${outputAudioRate} "${outputPath}"`;
 
-    console.log('🔧 Running FFmpeg command:', cmd);
-
-    await execAsync(cmd);
+      console.log('🔧 Running FFmpeg command:', cmd);
+      await execAsync(cmd, {
+        timeout: VIDEO_TRANSFORM_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+        maxBuffer: 8 * 1024 * 1024,
+      });
+    };
+    if (isEpilepsyNoiseAudio) {
+      const verified = await encodeEpilepsyNoiseWithTruePeakGate({
+        encode,
+        measureTruePeakDbtp: () => measureEncodedTruePeakDbtp(outputPath),
+        onRetry: (details) => {
+          console.warn('Encoded epilepsy_noise output exceeded true-peak ceiling; retrying safely', details);
+        },
+      });
+      encodedTruePeakDbtp = verified.encodedTruePeakDbtp;
+      encodeAttempts = verified.encodeAttempts;
+    } else {
+      await encode(audioFilterChain);
+    }
 
     // Read transformed video
     const transformedBuffer = fs.readFileSync(outputPath);
-
-    // Cleanup temp files
-    try {
-      fs.unlinkSync(inputPath);
-      fs.unlinkSync(outputPath);
-      if (adPath && fs.existsSync(adPath)) fs.unlinkSync(adPath);
-      if (captionPath && fs.existsSync(captionPath)) fs.unlinkSync(captionPath);
-    } catch (cleanupError) {
-      console.warn('Failed to cleanup temp files:', cleanupError);
+    let evidence: TransformEvidence | undefined;
+    if (flashBefore) {
+      const after = await measureFlashRisk(outputPath);
+      evidence = {
+        kind: 'flash-risk-proxy',
+        before: flashBefore,
+        after,
+        improvement: {
+          maxLuminanceDeltaReduction: Number(
+            (flashBefore.maxLuminanceDelta - after.maxLuminanceDelta).toFixed(4),
+          ),
+          rapidHighDeltaTransitionReduction:
+            flashBefore.rapidHighDeltaTransitions - after.rapidHighDeltaTransitions,
+        },
+        disclaimer: 'Engineering luminance-transition proxy only; not medical certification or guaranteed seizure prevention.',
+      };
+    } else if (audioBefore) {
+      const after = await measureAudioDynamics(outputPath);
+      evidence = {
+        kind: 'audio-dynamics',
+        before: audioBefore,
+        after,
+        improvement: {
+          shortWindowRmsRangeReductionDb: Number(
+            (audioBefore.shortWindowRmsRangeDb - after.shortWindowRmsRangeDb).toFixed(2),
+          ),
+          peakReductionDb: Number(
+            (audioBefore.maxPeakDbfs - after.maxPeakDbfs).toFixed(2),
+          ),
+        },
+        encodedTruePeakCeilingDbtp: EPILEPSY_NOISE_TRUE_PEAK_CEILING_DBTP,
+        encodedTruePeakDbtp: encodedTruePeakDbtp!,
+        encodeAttempts,
+        disclaimer: 'Engineering audio-dynamics measurements only; not medical certification or guaranteed trigger prevention.',
+      };
     }
 
-    return transformedBuffer;
-  } catch (error) {
-    // Cleanup on error
+    return { videoBuffer: transformedBuffer, evidence };
+  } finally {
     try {
-      if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
-      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-      if (adPath && fs.existsSync(adPath)) fs.unlinkSync(adPath);
-      if (captionPath && fs.existsSync(captionPath)) fs.unlinkSync(captionPath);
+      fs.rmSync(tempDir, { recursive: true, force: true });
     } catch (cleanupError) {
-      console.warn('Failed to cleanup temp files after error:', cleanupError);
+      console.warn('Failed to cleanup transform temp directory:', cleanupError);
     }
-    throw error;
   }
 }
 
-export function createVideoTransformWorker(connection: IORedis): Worker {
+export function createVideoTransformWorker(
+  connection: IORedis,
+  prefix: string,
+  concurrency: number,
+  recordCompletion: (completion: { queueName: string; jobId: string; tenantId: string; egressBytes: number }) => Promise<void>,
+): Worker {
   return new Worker(
     'video-transform',
     async (job) => {
-      console.log('🎬 Video transform job started:', job.id, job.data);
+      console.log('🎬 Video transform job started:', {
+        jobId: job.id,
+        tenantId: job.data?.tenantId,
+        presetId: job.data?.presetId,
+      });
       const { videoUrl, tenantId, presetId, transformConfig, adJobId, captionJobId } = job.data as VideoTransformJobData;
 
       if (!videoUrl) {
         console.error('❌ Missing videoUrl in job data');
-        return { ok: false, error: 'missing_video_url' };
+        throw new Error('missing_video_url');
       }
 
       try {
         const cloudinaryUrl = process.env.CLOUDINARY_URL;
         let transformedVideoUrl: string;
         let videoBuffer: Buffer | null = null;
-        let needsAudioProcessing = transformConfig?.lowPassFilter || transformConfig?.audioSmooth;
-        let needsAdvancedFeatures = transformConfig?.audioDescription || transformConfig?.captionOverlay || transformConfig?.volumeBoost;
+        let evidence: TransformEvidence | undefined;
+        const needsAudioProcessing = transformConfig?.lowPassFilter || transformConfig?.audioSmooth;
+        const needsAdvancedFeatures = transformConfig?.audioDescription || transformConfig?.captionOverlay || transformConfig?.volumeBoost;
+        const needsFfmpegColorCorrection =
+          transformConfig?.colorProfile === 'colorblind-safe'
+          || transformConfig?.filter === 'e_colorblind_correction';
+        const needsEngineeringEvidence =
+          transformConfig?.flashRiskEvidence || transformConfig?.audioRiskEvidence;
 
         // Use FFmpeg if advanced features are needed (audio mixing, caption overlay, volume boost)
         // Cloudinary doesn't support these features well
-        if (cloudinaryUrl && !needsAudioProcessing && !needsAdvancedFeatures) {
+        if (
+          cloudinaryUrl
+          && !needsAudioProcessing
+          && !needsAdvancedFeatures
+          && !needsFfmpegColorCorrection
+          && !needsEngineeringEvidence
+        ) {
           // Use Cloudinary transformation API (faster, serverless)
           // Note: If audio filtering or advanced features are needed, use FFmpeg fallback for better control
           console.log('☁️ Using Cloudinary for video transformation');
@@ -538,14 +647,24 @@ export function createVideoTransformWorker(connection: IORedis): Worker {
           videoBuffer = Buffer.from(await videoResponse.arrayBuffer());
         } else {
           // Use FFmpeg for audio filtering, advanced features, or when Cloudinary unavailable
-          if (needsAdvancedFeatures && cloudinaryUrl) {
+          if (needsFfmpegColorCorrection && cloudinaryUrl) {
+            console.log('🔄 Color-blind video correction requires FFmpeg; skipping incompatible Cloudinary effect');
+          } else if (needsAdvancedFeatures && cloudinaryUrl) {
             console.log('🔄 Advanced features (audio mixing/caption overlay) required - using FFmpeg for full control');
           } else if (needsAudioProcessing && cloudinaryUrl) {
             console.log('🔄 Audio filtering required - using FFmpeg for full control');
           } else {
             console.log('🔄 Cloudinary not configured, using FFmpeg fallback');
           }
-          videoBuffer = await transformWithFFmpeg(videoUrl, transformConfig, adJobId, captionJobId, tenantId);
+          const transformed = await transformWithFFmpeg(
+            videoUrl,
+            transformConfig,
+            adJobId,
+            captionJobId,
+            tenantId,
+          );
+          videoBuffer = transformed.videoBuffer;
+          evidence = transformed.evidence;
           // For FFmpeg, we'll use a placeholder URL since it's local processing
           transformedVideoUrl = `ffmpeg-processed-${job.id}`;
         }
@@ -557,21 +676,40 @@ export function createVideoTransformWorker(connection: IORedis): Worker {
         // Upload transformed video to R2
         const r2Key = `artifacts/${tenantId || 'anon'}/${job.id}-transformed.mp4`;
         await uploadToR2(r2Key, videoBuffer, 'video/mp4');
+        let evidenceArtifactKey: string | undefined;
+        if (evidence) {
+          evidenceArtifactKey = `artifacts/${tenantId || 'anon'}/${job.id}-evidence.json`;
+          await uploadToR2(
+            evidenceArtifactKey,
+            Buffer.from(JSON.stringify(evidence, null, 2)),
+            'application/json',
+          );
+        }
+        if (tenantId) {
+          await recordCompletion({
+            queueName: job.queueName,
+            jobId: String(job.id),
+            tenantId,
+            egressBytes: videoBuffer.length,
+          });
+        }
 
         console.log('✅ Transformed video uploaded to R2:', r2Key);
 
         return {
           ok: true,
           artifactKey: r2Key,
+          evidenceArtifactKey,
+          evidence,
           cloudinaryUrl: transformedVideoUrl,
           tenantId,
           presetId,
         };
       } catch (error) {
-        console.error('⚠️ Video transformation failed, returning degraded:', error instanceof Error ? error.message : String(error));
-        return { ok: true, degraded: true, tenantId, presetId };
+        console.error('Video transformation failed:', error instanceof Error ? error.message : String(error));
+        throw error;
       }
     },
-    { connection }
+    { connection, prefix, concurrency }
   );
 }

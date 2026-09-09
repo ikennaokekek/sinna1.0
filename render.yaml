@@ -8,7 +8,7 @@ services:
     buildCommand: pnpm i --frozen-lockfile && pnpm -C packages/types build && NODE_OPTIONS='--max-old-space-size=2048' pnpm build
     startCommand: node apps/api/dist/index.js
     healthCheckPath: /health
-    autoDeploy: true
+    autoDeploy: false
     
     # Environment Variables
     envVars:
@@ -134,7 +134,7 @@ services:
     region: frankfurt
     buildCommand: pnpm i --frozen-lockfile && pnpm -C packages/types build && NODE_OPTIONS='--max-old-space-size=2048' pnpm build
     startCommand: node apps/worker/dist/index.js
-    autoDeploy: true
+    autoDeploy: false
     
     # Same environment variables as API
     envVars:
@@ -241,6 +241,7 @@ services:
     region: frankfurt
     buildCommand: pnpm i --frozen-lockfile
     startCommand: pnpm watchdog
+    autoDeploy: false
     envVars:
       - key: NODE_ENV
         value: production
@@ -310,6 +311,7 @@ services:
     schedule: "0 0 */3 * *"  # Every 3 days at midnight UTC
     buildCommand: pnpm i --frozen-lockfile && pnpm -C packages/types build
     startCommand: pnpm tsx scripts/scheduled-task.ts
+    autoDeploy: false
     envVars:
       - key: NODE_ENV
         value: production

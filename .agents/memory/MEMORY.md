@@ -1,3 +1,6 @@
 - [Replit package-firewall toolchain](package-firewall-toolchain.md) — prefer supported parent upgrades; current SINNA test tooling needs a Node-20-compatible Vitest/Vite/tsx set.
 - [Imported schema baselines](imported-schema-baselines.md) — fingerprint the reconciled live baseline, then trust immutable ledger history after future migrations evolve it.
 - [Core authority boundaries](core-authority-boundaries.md) — onboarding owns checkout/key delivery; Core owns runtime authorization and accepts only authenticated normalized sync state.
+- [Redis worker lifecycle](redis-worker-lifecycle.md) — separate bounded startup from runtime reconnects, and close BullMQ handles before their shared Redis connection.
+- [Ambiguous operator writes](ambiguous-operator-writes.md) — resolve uncertain commits with immutable operation evidence and reread it after backend termination.
+- [Media worker runtime](media-worker-runtime.md) — keep media transforms bounded and tenant-safe; label epilepsy evidence as engineering proxies, never medical certification.

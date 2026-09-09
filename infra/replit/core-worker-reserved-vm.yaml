@@ -1,0 +1,83 @@
+# Repository contract only. This file does not create or configure a deployment.
+contractVersion: 1
+provider: replit
+unit: core-worker
+projectIsolation: dedicated-replit-project
+deploymentType: reserved-vm
+alwaysOn: true
+publicIngress: false
+httpListener: false
+sourceRevision: approved-full-sha
+buildCommand: bash infra/replit/build-core-worker.sh
+runCommand: bash infra/replit/run-core-worker.sh
+readinessCommand: node apps/worker/dist/readiness.js
+runtime:
+  entrypoint: apps/worker/dist/index.js
+  queueNames:
+    - captions
+    - ad
+    - color
+    - video-transform
+  queueNamespaceEnvironment: QUEUE_PREFIX
+  retry:
+    attempts: 5
+    strategy: exponential
+    initialDelayMs: 5000
+  orchestration:
+    transformPrerequisites: bullmq-flow-children
+    failedPrerequisite: fail-parent
+  completionAccounting:
+    timing: before-bullmq-completion
+    idempotencyKey:
+      - queue-name
+      - job-id
+  heartbeat:
+    intervalSeconds: 15
+    ttlSeconds: 45
+    states:
+      - starting
+      - ready
+      - draining
+  gracefulShutdown:
+    timeoutEnvironment: WORKER_SHUTDOWN_TIMEOUT_MS
+    minMs: 10000
+    maxMs: 300000
+  ephemeralScratchOnly: true
+  implicitMigrations: false
+  launchesCoreApi: false
+dependencies:
+  startupFatal:
+    - postgresql
+    - redis
+    - ffmpeg
+  configuredAtStartup:
+    - s3-compatible-object-store
+    - assemblyai
+    - openai
+    - cloudinary
+requiredConfiguration:
+  - DATABASE_SSL_MODE
+  - QUEUE_PREFIX
+  - WORKER_INSTANCE_ID
+  - WORKER_CONCURRENCY
+  - WORKER_SHUTDOWN_TIMEOUT_MS
+requiredSecrets:
+  - DATABASE_URL
+  - REDIS_URL
+  - R2_ACCOUNT_ID
+  - R2_ACCESS_KEY_ID
+  - R2_SECRET_ACCESS_KEY
+  - R2_BUCKET
+  - ASSEMBLYAI_API_KEY
+  - OPENAI_API_KEY
+  - CLOUDINARY_URL
+prohibitedSecrets:
+  - SESSION_SECRET
+  - REPLIT_SYNC_SECRET
+  - STRIPE_SECRET_KEY
+  - STRIPE_WEBHOOK_SECRET
+prohibitedResponsibilities:
+  - http-api
+  - checkout
+  - plaintext-api-key-delivery
+  - schema-migration

@@ -218,27 +218,11 @@ Get job status.
 - `failed`: Step failed
 - `pending`: Step not yet started or in progress
 
-### Billing
+### Billing ownership
 
-#### POST /v1/billing/subscribe
-Create Stripe checkout session for subscription.
-
-**Headers:**
-- `X-API-Key`: Required
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "url": "https://checkout.stripe.com/..."
-  }
-}
-```
-
-**Status Codes:**
-- `200 OK`: Checkout session created
-- `503 Service Unavailable`: Stripe not configured
+Core does not create checkout sessions. The separate onboarding service owns
+checkout and plaintext API-key delivery, then synchronizes authenticated,
+normalized tenant state to Core.
 
 ### Subscription
 

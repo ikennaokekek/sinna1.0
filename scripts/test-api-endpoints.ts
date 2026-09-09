@@ -98,8 +98,8 @@ async function runTests() {
 
   // System endpoints (require API key)
   console.log('\n⚙️  System Endpoints');
-  results.push(await testEndpoint('GET', '/health', { expectedStatus: [200, 401] }));
-  results.push(await testEndpoint('GET', '/readiness', { expectedStatus: [200, 401, 503] }));
+  results.push(await testEndpoint('GET', '/health', { expectedStatus: [200] }));
+  results.push(await testEndpoint('GET', '/readiness', { expectedStatus: [200, 503] }));
   results.push(await testEndpoint('GET', '/metrics', { expectedStatus: [200, 401] }));
 
   // Jobs endpoints
@@ -111,10 +111,6 @@ async function runTests() {
     })
   );
   results.push(await testEndpoint('GET', '/v1/jobs/invalid-id', { expectedStatus: [404, 401] }));
-
-  // Billing endpoints
-  console.log('\n💳 Billing Endpoints');
-  results.push(await testEndpoint('POST', '/v1/billing/subscribe', { expectedStatus: [200, 401, 503] }));
 
   // Subscription endpoints
   console.log('\n📊 Subscription Endpoints');

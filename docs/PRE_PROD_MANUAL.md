@@ -1,53 +1,49 @@
 # Manual checks before production
 
-Use this after CI is green on your branch and before you treat a deployment as production-ready.
+Use this after CI is green and before requesting protected production approval.
+Canonical policy is in `docs/CI_CD_ENVIRONMENTS.md`.
 
-## 1. One-command local integration (Docker)
+## 1. Local validation
 
-With **Docker Desktop** running:
+With Docker available, run:
 
 ```bash
 pnpm test:integration:local
 ```
 
-This starts Postgres 15 + Redis 7 containers, migrates, seeds the same CI API key as GitHub Actions (`sinna-ci-test-api-key`), runs the API, then `pnpm test:integration` and Playwright `pnpm test:e2e`. Use `RUN_E2E=0` to skip Playwright.
+This is disposable local validation with PostgreSQL and Redis; it is not
+staging or production. Migrations used there are explicit commands. Application
+startup must never migrate.
 
-## 2. Local API + automated smoke (your own `.env`)
+## 2. Staging validation
 
-1. Copy `env.example` to `.env` and fill real values (database, Redis, R2, AI keys, Stripe, etc.).
-2. Run migrations: `pnpm -C apps/api run migrate` (with `DATABASE_URL` set).
-3. Start the API: `pnpm dev` (or `pnpm build && pnpm start`).
-4. In another terminal, with the API running:
+Staging has its own deployment, credentials, data stores, and provider
+resources. Configure the protected GitHub `staging` environment with
+`STAGING_E2E_BASE_URL` and `STAGING_E2E_API_KEY`, and configure the exact
+`STAGING_ALLOWED_HOST`. Enable the staging job only with
+`ENABLE_STAGING_E2E=true`.
 
-   ```bash
-   export E2E_BASE_URL=http://127.0.0.1:4000
-   export API_BASE_URL=http://127.0.0.1:4000
-   export TEST_API_KEY=<your real tenant API key>
-   pnpm test:integration
-   export API_KEY="$TEST_API_KEY"
-   pnpm test:e2e
-   ```
+The workflow rejects non-HTTPS URLs, credentials/fragments, localhost/IP
+addresses, known production hosts, and host mismatches. Staging E2E never
+targets production.
 
-   `test:integration` talks to the running server over HTTP. `test:e2e` runs Playwright against `/health` with a key.
+## 3. Production approval and deploy
 
-## 3. Staging / production URL (optional GitHub job)
+1. Select the green full commit SHA validated in staging.
+2. Dispatch the protected production-promotion workflow with that SHA and its
+   exact confirmation text. Production approval and account-level protection
+   must be configured in GitHub before use.
+3. The workflow is an approval/traceability gate only: it builds and unit-tests
+   the exact revision but performs no deployment and no migrations.
+4. An authorized operator deploys the approved exact revision manually.
 
-To run the same tests against a deployed URL on every workflow run:
+`render.yaml` disables API and worker auto-deploy, but repository configuration
+does not mutate live Render settings. Disable Auto-Deploy in the live Render
+dashboard manually as well.
 
-1. Repository **Settings → Secrets and variables → Actions**: add `STAGING_E2E_BASE_URL` (no trailing slash) and `TEST_API_KEY` (valid on that deployment).
-2. **Settings → Secrets and variables → Actions → Variables**: add `ENABLE_REMOTE_E2E` = `true`.
+## 4. Migration and rollback controls
 
-The `integration-e2e-remote` job will fail if the variable is set but secrets are missing.
-
-## 4. What CI runs
-
-- **build**: `pnpm install --frozen-lockfile` and `pnpm build`.
-- **integration-e2e-local**: Postgres and Redis service containers, migrations, seeded CI tenant, API process, `pnpm test:integration`, Playwright `pnpm test:e2e`, then `pnpm -C apps/api test` with the same database.
-
-## 5. Production checklist (operations)
-
-- Environment variables set on the host (Render, etc.) and match `env.example` shape.
-- Database migrated; at least one active tenant and API key.
-- Redis reachable from API and worker if you use queues.
-- Stripe webhooks point to the live API URL; use live keys only in production.
-- CORS and `BASE_URL` / public URLs match your real domain.
+Production migrations require a separate explicit approval, backup, execution,
+and verification plan. Never rely on startup migrations. Roll back by manually
+deploying a known-good exact revision; evaluate database compatibility and
+restore separately.

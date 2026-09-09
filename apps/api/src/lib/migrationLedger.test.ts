@@ -20,20 +20,27 @@ const historicalRows = (migrations: Awaited<ReturnType<typeof discoverMigrations
   migrations.slice(0, 8).map(({ version, filename, checksum }) => ({ version, filename, checksum, disposition: 'baselined' }));
 const appliedCurrentMigrations = (migrations: Awaited<ReturnType<typeof discoverMigrations>>) => [
   ...historicalRows(migrations),
-  { ...migrations[8], disposition: 'executed' as const },
+  ...migrations.slice(8).map((migration) => ({ ...migration, disposition: 'executed' as const })),
 ];
 
 describe('migration ledger', () => {
   it('discovers the approved numeric migration sequence in order', async () => {
     const migrations = await discoverMigrations();
-    expect(migrations.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(migrations.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     expect(migrations[0].checksum).toHaveLength(64);
   });
 
-  it('rejects checksum drift in an approved migration', async () => {
+  it.each([
+    [1, '001_init.sql'],
+    [11, '011_harden_stripe_webhook_inbox.sql'],
+    [12, '012_add_stripe_webhook_retry_backoff.sql'],
+    [13, '013_add_stripe_webhook_requeue_operations.sql'],
+  ])('rejects checksum drift in pinned migration %i', async (version, filename) => {
     const migrations = await discoverMigrations();
-    migrations[0] = { ...migrations[0], checksum: '0'.repeat(64) };
-    expect(() => assertApprovedHistoricalMigrations(migrations)).toThrow(/checksum drift/);
+    migrations[version - 1] = { ...migrations[version - 1], checksum: '0'.repeat(64) };
+    expect(() => assertApprovedHistoricalMigrations(migrations)).toThrow(
+      new RegExp(`checksum drift: ${filename}`),
+    );
   });
 
   it('rejects a ledger that does not begin at version 1', async () => {
@@ -113,7 +120,7 @@ describe('migration ledger', () => {
 
   it('rolls back a future migration when its SQL fails', async () => {
     const migrations = await discoverMigrations();
-    const future = { version: 10, filename: '010_future.sql', checksum: 'a'.repeat(64), sql: 'SELECT fail_me()' };
+    const future = { version: 14, filename: '014_future.sql', checksum: 'a'.repeat(64), sql: 'SELECT fail_me()' };
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('to_regclass')) return { rows: [{ ledger: 'sinna_core_schema_migrations' }] };
       if (sql.includes('SELECT version')) return { rows: appliedCurrentMigrations(migrations) };
@@ -124,9 +131,28 @@ describe('migration ledger', () => {
     expect(query).toHaveBeenCalledWith('ROLLBACK');
   });
 
+  it('locks tenant identity writes before migration 011 duplicate preflight', async () => {
+    const migrations = await discoverMigrations();
+    const calls: string[] = [];
+    const query = vi.fn(async (sql: string) => {
+      calls.push(sql);
+      if (sql.includes('to_regclass')) return { rows: [{ ledger: 'sinna_core_schema_migrations' }] };
+      if (sql.includes('SELECT version')) return { rows: historicalRows(migrations) };
+      if (sql.includes('duplicate_count')) return { rows: [{ duplicate_count: 0 }] };
+      return { rows: [] };
+    });
+    await apply({ query } as never, migrations.slice(0, 11));
+    expect(calls.indexOf('LOCK TABLE public.tenants IN SHARE ROW EXCLUSIVE MODE')).toBeGreaterThan(
+      calls.indexOf('BEGIN'),
+    );
+    expect(calls.indexOf('LOCK TABLE public.tenants IN SHARE ROW EXCLUSIVE MODE')).toBeLessThan(
+      calls.findIndex((sql) => sql.includes('duplicate_count')),
+    );
+  });
+
   it('applies an unapplied future migration in a transaction', async () => {
     const migrations = await discoverMigrations();
-    const future = { version: 10, filename: '010_future.sql', checksum: 'b'.repeat(64), sql: 'CREATE TABLE future_test (id int)' };
+    const future = { version: 14, filename: '014_future.sql', checksum: 'b'.repeat(64), sql: 'CREATE TABLE future_test (id int)' };
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('to_regclass')) return { rows: [{ ledger: 'sinna_core_schema_migrations' }] };
       if (sql.includes('SELECT version')) return { rows: appliedCurrentMigrations(migrations) };
@@ -140,7 +166,7 @@ describe('migration ledger', () => {
 
   it('does not execute an already-recorded future migration', async () => {
     const migrations = await discoverMigrations();
-    const future = { version: 10, filename: '010_future.sql', checksum: 'b'.repeat(64), sql: 'CREATE TABLE future_test (id int)' };
+    const future = { version: 14, filename: '014_future.sql', checksum: 'b'.repeat(64), sql: 'CREATE TABLE future_test (id int)' };
     const records = [...appliedCurrentMigrations(migrations), { ...future, disposition: 'executed' as const }];
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('to_regclass')) return { rows: [{ ledger: 'sinna_core_schema_migrations' }] };
@@ -153,7 +179,7 @@ describe('migration ledger', () => {
 
   it('rolls back if atomic ledger recording fails', async () => {
     const migrations = await discoverMigrations();
-    const future = { version: 10, filename: '010_future.sql', checksum: 'c'.repeat(64), sql: 'CREATE TABLE future_test (id int)' };
+    const future = { version: 14, filename: '014_future.sql', checksum: 'c'.repeat(64), sql: 'CREATE TABLE future_test (id int)' };
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('to_regclass')) return { rows: [{ ledger: 'sinna_core_schema_migrations' }] };
       if (sql.includes('SELECT version')) return { rows: appliedCurrentMigrations(migrations) };
@@ -166,7 +192,7 @@ describe('migration ledger', () => {
 
   it('rejects transaction-control SQL in future migrations', async () => {
     const migrations = await discoverMigrations();
-    const future = { version: 10, filename: '010_future.sql', checksum: 'd'.repeat(64), sql: 'COMMIT; CREATE TABLE future_test (id int)' };
+    const future = { version: 14, filename: '014_future.sql', checksum: 'd'.repeat(64), sql: 'COMMIT; CREATE TABLE future_test (id int)' };
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('to_regclass')) return { rows: [{ ledger: 'sinna_core_schema_migrations' }] };
       if (sql.includes('SELECT version')) return { rows: appliedCurrentMigrations(migrations) };
@@ -231,12 +257,16 @@ describe('migration ledger', () => {
       for (const filename of await readdir(source)) {
         if (filename.endsWith('.sql')) await writeFile(path.join(directory, filename), await readFile(path.join(source, filename)));
       }
-      await writeFile(path.join(directory, '010_future.sql'), 'ALTER TABLE tenants ADD COLUMN future_value text');
+      await writeFile(path.join(directory, '014_future.sql'), 'ALTER TABLE tenants ADD COLUMN future_value text');
       const migrations = await discoverMigrations(directory);
       const records = [
         ...historicalRows(migrations),
         { ...migrations[8], disposition: 'executed' as const },
         { ...migrations[9], disposition: 'executed' as const },
+        { ...migrations[10], disposition: 'executed' as const },
+        { ...migrations[11], disposition: 'executed' as const },
+        { ...migrations[12], disposition: 'executed' as const },
+        { ...migrations[13], disposition: 'executed' as const },
       ];
       const client = {
         query: vi.fn(async (sql: string) => {

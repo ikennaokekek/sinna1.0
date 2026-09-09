@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
-import { isTenantArtifactKey } from './jobs';
+import Fastify from 'fastify';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { isTenantArtifactKey, registerJobRoutes } from './jobs';
+import type { AuthenticatedRequest } from '../types';
 
 describe('Job Route Validation', () => {
   it('should validate job creation request', () => {
@@ -59,6 +63,43 @@ describe('Signed artifact ownership', () => {
   it('does not accept a cross-tenant artifact key', () => {
     expect(isTenantArtifactKey('artifacts/tenant-a/42.vtt', 'tenant-a')).toBe(true);
     expect(isTenantArtifactKey('artifacts/tenant-b/42.vtt', 'tenant-a')).toBe(false);
+  });
+
+  it('is enforced by the alternate file-signing endpoint', () => {
+    const source = readFileSync(path.resolve(__dirname, '..', 'index.ts'), 'utf8');
+    expect(source).toContain('isTenantArtifactKey(params.id, tenantId)');
+  });
+});
+
+describe('Queue availability', () => {
+  it('returns an explicit 503 after authentication when Redis queues are unavailable', async () => {
+    const app = Fastify();
+    app.addHook('preHandler', async (request) => {
+      (request as AuthenticatedRequest).tenantId = 'tenant-a';
+    });
+    registerJobRoutes(
+      app,
+      null,
+      null,
+      { labels: () => ({ set: () => undefined }) },
+      { labels: () => ({ inc: () => undefined }) },
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      payload: {
+        source_url: 'https://example.com/video.mp4',
+        preset_id: 'deaf',
+      },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: 'service_unavailable',
+    });
+    await app.close();
   });
 });
 

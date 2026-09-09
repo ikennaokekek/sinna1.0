@@ -17,21 +17,31 @@ describe('Integration smoke: Sinna API', () => {
   beforeAll(async () => {
     try {
       const res = await fetch(`${base}/health`, { method: 'GET' });
-      if (res.status !== 401 && res.status !== 200) {
-        throw new Error(
-          `GET ${base}/health returned ${res.status}; expected 401 or 200`
-        );
+      if (res.status !== 200) {
+        throw new Error(`GET ${base}/health returned ${res.status}; expected 200`);
       }
     } catch (e) {
       if (e instanceof Error && e.message.includes('GET ')) throw e;
       throw new Error(`API not reachable at ${base}/health: ${String(e)}`);
     }
   });
-  it('GET /health without API key returns 401', async () => {
+  it('GET /health is publicly available for service monitoring', async () => {
     const res = await fetch(`${base}/health`);
-    expect(res.status).toBe(401);
-    const body = (await res.json()) as { code?: string };
-    expect(body.code).toBe('unauthorized');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('GET /readiness is public and reports named dependency checks', async () => {
+    const res = await fetch(`${base}/readiness`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok?: boolean;
+      checks?: { postgres?: string; redis?: string };
+    };
+    expect(body).toEqual({
+      ok: true,
+      checks: { postgres: 'up', redis: 'up' },
+    });
   });
 
   it('POST /v1/jobs without API key returns 401', async () => {
@@ -52,9 +62,7 @@ describe('Integration smoke: Sinna API', () => {
         headers: { 'x-api-key': apiKey },
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { ok?: boolean; uptime?: number };
-      expect(body.ok).toBe(true);
-      expect(typeof body.uptime).toBe('number');
+      expect(await res.json()).toEqual({ ok: true });
     });
 
     it('POST /v1/jobs with invalid preset_id returns 400', async () => {

@@ -1,0 +1,30 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "Z5xMAZwyZGh6Qu3jM8HdY"
+uri = "file://.local/backups/SINNA-full-repository-2ea18f0.bundle"
+type = "unspecified"
+title = "SINNA full repository backup"
+description = "Self-contained Git bundle preserving complete history, local branches, existing tags, and validated main HEAD 2ea18f0."
+logical_id = "c4df49b8-0b01-413c-8afb-b2b9d1c6a6c1"
+content_hash = "sha256:15fd5f9c7810e0e1d05f14b2d09a91cdcf87666db1077b7902f525993949f50a"
+size = 1009417
+mtime_ms = 1788816622313
+storage_uri = "gcs://replit-rams-assets-spock/rams/assets/repl:627e2624-8670-4cdc-b871-2b6b85e9b6cb/c4df49b8-0b01-413c-8afb-b2b9d1c6a6c1/8cb11331-d68b-4af3-80c8-a4c3e43b39a3"
+storage_version_token = "1788816627910787"
+content_type = "application/octet-stream"
+
+[[outputs]]
+id = "0LDxnhs_qK5az9ok-be8A"
+uri = "file://SINNA-repository-backup.bundle"
+type = "unspecified"
+title = "Download SINNA repository backup"
+description = "Verified full-history Git bundle copied to the workspace root for direct export."
+logical_id = "f3b94cd1-6c3c-4480-b323-a131ef724722"
+content_hash = "sha256:15fd5f9c7810e0e1d05f14b2d09a91cdcf87666db1077b7902f525993949f50a"
+size = 1009417
+mtime_ms = 1788816945560
+storage_uri = "gcs://replit-rams-assets-spock/rams/assets/repl:627e2624-8670-4cdc-b871-2b6b85e9b6cb/f3b94cd1-6c3c-4480-b323-a131ef724722/f37ecaef-7e87-4ec1-b46d-f717f267588b"
+storage_version_token = "1788816951189584"
+content_type = "application/octet-stream"

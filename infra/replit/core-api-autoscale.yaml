@@ -1,0 +1,53 @@
+# Repository-only Step 7 contract. This file does not configure or publish Replit.
+contractVersion: 1
+provider: replit
+service: core-api
+liveDeploymentMutation: false
+projectBoundary: dedicated-replit-project
+target: autoscale
+publicIngress: true
+bindHost: 0.0.0.0
+portEnvironment: PORT
+startupResponseDeadlineMs: 5000
+absoluteStartupDeadlineMs: 4500
+postgresStartupProbeDeadlineMs: 2000
+buildCommand: bash infra/replit/build-core-api.sh
+runCommand: bash infra/replit/run-core-api.sh
+livenessPath: /health
+readinessPath: /readiness
+scaleToZeroSafe: true
+backgroundConsumers: false
+filesystem:
+  persistence: ephemeral
+  runtimeStateAllowed: false
+requiredConfiguration:
+  - PORT
+  - REVISION
+  - DATABASE_SSL_MODE
+  - CORS_ORIGINS
+  - DB_POOL_MAX
+  - DB_POOL_MIN
+  - QUEUE_PREFIX
+requiredSecrets:
+  - DATABASE_URL
+  - REDIS_URL
+  - R2_ACCOUNT_ID
+  - R2_ACCESS_KEY_ID
+  - R2_SECRET_ACCESS_KEY
+  - R2_BUCKET
+  - REPLIT_SYNC_SECRET
+conditionalSecrets:
+  - STRIPE_SECRET_KEY_LIVE
+  - STRIPE_WEBHOOK_SECRET_LIVE
+  - SENTRY_DSN
+prohibitedSecrets:
+  - SESSION_SECRET
+  - CLOUDINARY_URL
+  - ASSEMBLYAI_API_KEY
+  - OPENAI_API_KEY
+  - OPEN_ROUTER_QWEN_KEY
+  - WORKER_INSTANCE_ID
+migrations:
+  onBuild: false
+  onStartup: false
+  explicitApprovedOperationOnly: true

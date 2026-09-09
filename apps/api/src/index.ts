@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import IORedis from 'ioredis';
 // duplicate imports removed
-import { Queue } from 'bullmq';
+import { FlowProducer, Queue } from 'bullmq';
 import { redisConnection, verifyRedisConnection } from './lib/redis';
 import Stripe from 'stripe';
 import * as Sentry from '@sentry/node';
@@ -21,17 +21,20 @@ import { getDb, seedTenantAndApiKey } from './lib/db';
 import { hashKey } from './lib/auth';
 import { incrementAndGateUsage } from './lib/usage';
 import { isProduction } from './config/env';
-import { validateEnv } from '@sinna/types';
+import { apiStartupMetadata } from './lib/startupMetadata';
+import { coreQueuePrefix, coreQueueRetryOptions, validateEnv, withDeadline } from '@sinna/types';
 import { AuthenticatedRequest, TenantState } from './types';
 import { registerWebhookRoutes } from './routes/webhooks';
-import { registerBillingRoutes } from './routes/billing';
-import { registerJobRoutes } from './routes/jobs';
+import { isTenantArtifactKey, registerJobRoutes } from './routes/jobs';
 import { registerSubscriptionRoutes } from './routes/subscription';
 import { registerSyncRoutes } from './routes/sync';
 import { requestIdHook } from './middleware/requestId';
 import { sendErrorResponse } from './lib/errors';
 import { regionLanguageMiddleware } from './middleware/regionLanguage';
 import { requireAdminAccess } from './lib/adminAuth';
+import { checkReadiness } from './lib/readiness';
+import { runWithinApiStartupDeadline } from './lib/startupDeadline';
+import { lookupTenantAuthorization } from './lib/subscriptionAuthorization';
 
 const app = Fastify({
   logger: true,
@@ -175,12 +178,11 @@ app.addHook('preHandler', async (req, reply) => {
   try {
     const { getDb, withRetry } = await import('./lib/db');
     const { pool } = getDb();
-    const { rows } = await withRetry(async () => {
-      return await pool.query(
-        'select t.id as tenant_id, t.active, t.status, t.grace_until, t.expires_at from api_keys k join tenants t on t.id=k.tenant_id where k.key_hash=$1',
-        [h]
-      );
-    }, 2, 50);
+    const { rows } = await withDeadline(
+      withRetry(() => lookupTenantAuthorization(pool, h), 1, 50),
+      4_000,
+      'Tenant authorization retry deadline exceeded',
+    );
     const row = rows[0];
     if (!row) return reply.code(401).send({ code: 'unauthorized' });
     
@@ -204,7 +206,9 @@ app.addHook('preHandler', async (req, reply) => {
     // Handle database connection errors gracefully
     if (dbError?.message?.includes('Connection is closed') || 
         dbError?.code === 'ECONNREFUSED' ||
-        dbError?.code === 'ETIMEDOUT') {
+        dbError?.code === 'ETIMEDOUT' ||
+        dbError?.message?.includes('authorization lookup deadline') ||
+        dbError?.message?.includes('authorization retry deadline')) {
       return reply.code(503).send({ code: 'service_unavailable', error: 'Database temporarily unavailable. Please try again.' });
     }
     // Re-throw other errors
@@ -346,47 +350,50 @@ app.get('/email-status', {
   });
 });
 
-// Readiness probe: quick DB ping only
+// Public, bounded readiness probe. Object storage is deliberately checked at
+// startup/preflight or by synthetic monitoring, never on every probe.
 app.get('/readiness', {
   schema: {
     description: 'Check if database is ready',
     tags: ['System'],
-    security: [{ ApiKeyAuth: [] }],
     response: {
       200: {
         type: 'object',
         properties: {
-          db: { type: 'string', enum: ['up'] }
-        }
-      },
-      401: {
-        type: 'object',
-        properties: {
-          code: { type: 'string' }
+            ok: { type: 'boolean' },
+            checks: {
+              type: 'object',
+              properties: {
+                postgres: { type: 'string', enum: ['up', 'down'] },
+                redis: { type: 'string', enum: ['up', 'down'] },
+              },
+              required: ['postgres', 'redis'],
+            },
         }
       },
       503: {
         type: 'object',
         properties: {
-          db: { type: 'string', enum: ['down'] }
+            ok: { type: 'boolean' },
+            checks: {
+              type: 'object',
+              properties: {
+                postgres: { type: 'string', enum: ['up', 'down'] },
+                redis: { type: 'string', enum: ['up', 'down'] },
+              },
+              required: ['postgres', 'redis'],
+            },
         }
       }
     }
   }
-}, async (req, reply) => {
-  const key = req.headers['x-api-key'];
-  if (typeof key !== 'string') return reply.code(401).send({ code: 'unauthorized' });
-  try {
-    const { checkPoolHealth } = await import('./lib/db');
-    const isHealthy = await checkPoolHealth();
-    if (isHealthy) {
-      return reply.send({ db: 'up', ok: true });
-    } else {
-      return reply.code(503).send({ db: 'down', ok: false });
-    }
-  } catch (e) {
-    return reply.code(503).send({ db: 'down', ok: false, error: String(e) });
-  }
+}, async (_req, reply) => {
+  const { checkPoolHealth } = await import('./lib/db');
+  const status = await checkReadiness(
+    checkPoolHealth,
+    async () => (await redisConnection.ping()) === 'PONG',
+  );
+  return status.ok ? reply.send(status) : reply.code(503).send(status);
 });
 
 // Demo endpoint and status header
@@ -511,19 +518,40 @@ const tenants = new Map<string, TenantState>();
 
 // Subscription gating now handled in the auth preHandler above
 
-// BullMQ queues (shared Redis connection)
-const captionsQ = new Queue('captions', { connection: redisConnection });
-const adQ = new Queue('ad', { connection: redisConnection });
-const colorQ = new Queue('color', { connection: redisConnection });
-const videoTransformQ = new Queue('video-transform', { connection: redisConnection });
+type ApiQueues = {
+  captions: Queue;
+  ad: Queue;
+  color: Queue;
+  videoTransform: Queue;
+  flow: FlowProducer;
+};
+let apiQueues: ApiQueues | null = null;
+
+function initializeApiQueues(): ApiQueues {
+  if (apiQueues) return apiQueues;
+  const queueOptions = {
+    connection: redisConnection,
+    prefix: coreQueuePrefix(),
+    defaultJobOptions: coreQueueRetryOptions,
+  };
+  apiQueues = {
+    captions: new Queue('captions', queueOptions),
+    ad: new Queue('ad', queueOptions),
+    color: new Queue('color', queueOptions),
+    videoTransform: new Queue('video-transform', queueOptions),
+    flow: new FlowProducer({ connection: redisConnection, prefix: coreQueuePrefix() }),
+  };
+  return apiQueues;
+}
 
 // Stripe client initialization
-const stripeKey = process.env.STRIPE_SECRET_KEY || '';
+const stripeKey = process.env.NODE_ENV === 'production'
+  ? process.env.STRIPE_SECRET_KEY_LIVE || ''
+  : process.env.STRIPE_SECRET_KEY || '';
 const stripe = stripeKey ? new Stripe(stripeKey, { apiVersion: '2023-10-16' }) : null;
 
 // Register route modules (will be called after redis is initialized in start())
 function registerRoutes(): void {
-  registerBillingRoutes(app, stripe);
   registerWebhookRoutes(app, stripe, tenants);
   registerSubscriptionRoutes(app);
   registerSyncRoutes(app); // Replit Developer Portal sync endpoint
@@ -555,61 +583,19 @@ function registerTopLevelRoutes(): void {
     schema: {
       description: 'Check if server is alive',
       tags: ['System'],
-      security: [{ ApiKeyAuth: [] }],
       response: {
         200: {
           type: 'object',
           properties: {
-            ok: { type: 'boolean' },
-            uptime: { type: 'number' }
-          }
+            ok: { type: 'boolean' }
+          },
+          required: ['ok'],
+          additionalProperties: false
         },
-        401: {
-          type: 'object',
-          properties: {
-            code: { type: 'string' }
-          }
-        }
       }
     }
-  }, async (req, reply) => {
-    const key = req.headers['x-api-key'];
-    
-    // Basic liveness (no auth required — used by Render health checks)
-    if (typeof key !== 'string') {
-      return { ok: true, uptime: process.uptime() };
-    }
-    
-    // Extended health (with auth) includes Redis status
-    const redisStatus = {
-      configured: !!process.env.REDIS_URL,
-      connected: false,
-      queues: false,
-    };
-    
-    if (redisStatus.configured) {
-      try {
-        // Check BullMQ Redis connection
-        const pingResult = await redisConnection.ping().catch(() => null);
-        redisStatus.connected = pingResult === 'PONG';
-        
-        // Check if queues are accessible
-        try {
-          await captionsQ.getWaitingCount();
-          redisStatus.queues = true;
-        } catch {
-          redisStatus.queues = false;
-        }
-      } catch {
-        // Redis not connected
-      }
-    }
-    
-    return { 
-      ok: true, 
-      uptime: process.uptime(),
-      redis: redisStatus
-    };
+  }, async () => {
+    return { ok: true };
 });
 
   // GET /v1/demo
@@ -926,25 +912,20 @@ function registerTopLevelRoutes(): void {
   return res.send({ success: true, data: { period_start: startOfMonth, period_end: endOfMonth, ...state.usage } });
 });
 
-  // GET /v1/files/:id:sign
-  app.get('/v1/files/:id:sign', {
+  // GET /v1/files/sign?id=<tenant-scoped-artifact-key>
+  app.get('/v1/files/sign', {
     schema: {
       description: 'Generate a signed URL for file access',
       tags: ['Files'],
       security: [{ ApiKeyAuth: [] }],
-      params: {
+      querystring: {
         type: 'object',
         required: ['id'],
         properties: {
           id: {
             type: 'string',
-            description: 'File ID or path in R2 storage'
-          }
-        }
-      },
-      querystring: {
-        type: 'object',
-        properties: {
+            description: 'Tenant-scoped artifact path in R2 storage'
+          },
           ttl: {
             type: 'number',
             description: 'URL expiration in seconds (default: 3600, max: 86400)'
@@ -991,18 +972,22 @@ function registerTopLevelRoutes(): void {
     }
   }, async (req, res) => {
     try {
-      const paramsObj: Record<string, unknown> = {
-        ...(req.params as Record<string, unknown>),
-        ...(req.query as Record<string, unknown>),
-      };
+      const tenantId = (req as AuthenticatedRequest).tenantId;
+      if (!tenantId) {
+        return res.code(401).send({ success: false, error: 'unauthorized' });
+      }
+      const paramsObj = req.query as Record<string, unknown>;
       const params = z
         .object({ 
-          id: z.string().min(1).max(255).regex(/^[a-zA-Z0-9_\-/]+$/, 'File ID contains invalid characters'), 
+          id: z.string().min(1).max(255).regex(/^[a-zA-Z0-9_.\-/]+$/, 'File ID contains invalid characters'),
           ttl: z.coerce.number().int().positive().max(86400).optional() 
         })
         .parse(paramsObj);
 
       const ttl = params.ttl ?? 3600;
+      if (!isTenantArtifactKey(params.id, tenantId)) {
+        return res.code(404).send({ success: false, error: 'not_found' });
+      }
       const url = await getSignedGetUrl(params.id, ttl);
       return { success: true, data: { url, expires_in: ttl } };
       } catch (error) {
@@ -1017,7 +1002,7 @@ function registerTopLevelRoutes(): void {
 
 // Jobs routes are now in routes/jobs.ts
 
-// Note: Routes like /v1/me/usage and /v1/files/:id:sign are now registered via registerTopLevelRoutes()
+// Note: Routes like /v1/me/usage and /v1/files/sign are now registered via registerTopLevelRoutes()
 // in start() function after Swagger is initialized, so they appear in Swagger documentation.
 
 // Webhook routes are now in routes/webhooks.ts
@@ -1040,7 +1025,7 @@ app.addHook('onError', async (req, _reply, err) => {
   }
 });
 
-// Note: /v1/files/:id:sign route is now registered via registerTopLevelRoutes() in start()
+// Note: /v1/files/sign route is now registered via registerTopLevelRoutes() in start()
 
 const port = Number(process.env.PORT || 4000);
 
@@ -1089,16 +1074,19 @@ async function start() {
       }
     });
     
-    // Verify database connection health
+    // Core production must not begin serving until its essential dependencies
+    // are reachable. Development/test retain their existing convenient paths.
     try {
       const { checkPoolHealth } = await import('./lib/db');
       const dbHealthy = await checkPoolHealth();
       if (dbHealthy) {
         app.log.info('✅ Database connection pool healthy');
       } else {
+        if (isProduction()) throw new Error('PostgreSQL readiness failed');
         app.log.warn('⚠️  Database connection pool health check failed');
       }
     } catch (err) {
+      if (isProduction()) throw err;
       app.log.warn({ err }, '⚠️  Database health check error (non-fatal)');
     }
     
@@ -1108,14 +1096,18 @@ async function start() {
       try {
         const bullMQRedisOk = await verifyRedisConnection();
         if (bullMQRedisOk) {
+          initializeApiQueues();
           app.log.info('✅ BullMQ Redis connection verified (queues will work)');
         } else {
+          if (isProduction()) throw new Error('Redis readiness failed');
           app.log.warn('⚠️  BullMQ Redis connection failed (queues may not work)');
         }
       } catch (err) {
+        if (isProduction()) throw err;
         app.log.warn({ err }, '⚠️  BullMQ Redis verification failed (queues may not work)');
       }
     } else {
+      if (isProduction()) throw new Error('REDIS_URL is required in production');
       app.log.warn('⚠️  REDIS_URL not set; BullMQ queues will not work');
     }
     
@@ -1160,6 +1152,7 @@ async function start() {
         });
         app.log.info('Redis connected; using distributed rate limiter');
       } catch (e) {
+        if (isProduction()) throw e;
         app.log.warn({ err: e }, 'Redis unavailable; using in-memory rate limiter');
         try { client.disconnect(); } catch {}
         redis = null;
@@ -1171,12 +1164,12 @@ async function start() {
     registerTopLevelRoutes(); // Register routes that were at top level
     registerRoutes(); // Register routes from route modules
     // Register job routes with current redis state
-    registerJobRoutes(app, { captions: captionsQ, ad: adQ, color: colorQ, videoTransform: videoTransformQ }, redis, queueDepth, failuresTotal);
+    registerJobRoutes(app, apiQueues, redis, queueDepth, failuresTotal);
     
     // Sanity check: print environment
     app.log.info({ env: process.env.NODE_ENV }, 'Environment');
     // Startup environment info (no secrets)
-    app.log.info({ env: process.env.NODE_ENV || 'development', stripeLiveKeyPresent: isProduction() ? !!process.env.STRIPE_SECRET_KEY_LIVE : false }, 'Startup environment');
+    app.log.info(apiStartupMetadata(), 'Startup environment');
     
     // Log startup attempt
     app.log.info({ port, host: '0.0.0.0' }, '🚀 Starting API server...');
@@ -1189,7 +1182,38 @@ async function start() {
   }
 }
 
-start();
-
-
-
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info({ signal }, 'API draining');
+  const close = async () => {
+    await app.close();
+    if (apiQueues) {
+      await Promise.all([
+        apiQueues.captions.close(),
+        apiQueues.ad.close(),
+        apiQueues.color.close(),
+        apiQueues.videoTransform.close(),
+        apiQueues.flow.close(),
+      ]);
+    }
+    if (redis) await redis.quit();
+    await redisConnection.quit();
+    await getDb().pool.end();
+  };
+  const forced = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('shutdown timeout')), 10_000));
+  try {
+    await Promise.race([close(), forced]);
+    process.exit(0);
+  } catch (err) {
+    app.log.error({ err }, 'API forced shutdown');
+    process.exit(1);
+  }
+}
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+process.once('SIGINT', () => void shutdown('SIGINT'));
+void runWithinApiStartupDeadline(start).catch((error) => {
+  app.log.error({ error }, 'Core API startup exceeded its absolute deadline');
+  process.exit(1);
+});

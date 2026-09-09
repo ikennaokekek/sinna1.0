@@ -1,7 +1,7 @@
 import 'dotenv/config';
-import { validateEnv } from '@sinna/types';
+import { CORE_QUEUE_NAMES, coreQueuePrefix, databaseSslConfig, validateEnv, withDeadline } from '@sinna/types';
 try {
-  validateEnv(process.env);
+  validateEnv(process.env, 'worker');
 } catch (e: any) {
   // eslint-disable-next-line no-console
   console.error('Invalid environment configuration (worker):', e?.message || e);
@@ -11,35 +11,72 @@ import { Queue, Worker, QueueEvents } from 'bullmq';
 import { uploadToR2 } from './lib/r2';
 import IORedis from 'ioredis';
 import OpenAI from 'openai';
+import sharp from 'sharp';
+import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { createVideoTransformWorker } from './videoTransformWorker';
 import { downloadExternalMedia } from './lib/ssrf';
+import { writeHeartbeat } from './heartbeat';
+import { recordWorkerCompletion } from './completionAccounting';
+import { resolveAudioDescriptionText } from './audioDescription';
 
-/** Wait for Redis client to be ready before passing to BullMQ (required for blocking ops). */
-function waitForReady(client: IORedis, timeoutMs = 15000): Promise<void> {
-  if (client.status === 'ready') return Promise.resolve();
-  return new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('Redis ready timeout')), timeoutMs);
-    client.once('ready', () => {
-      clearTimeout(t);
-      resolve();
+const execFileAsync = promisify(execFile);
+const LOCAL_COLOR_ANALYSIS_TIMEOUT_MS = 15_000;
+
+function safeMediaSourceForLog(value: unknown): string {
+  try {
+    const url = new URL(String(value));
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return 'invalid-url';
+  }
+}
+
+async function analyzeVideoColorsLocally(source: Buffer): Promise<Record<string, unknown>> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sinna-color-analysis-'));
+  const inputPath = path.join(tempDir, 'input.mp4');
+  const framePath = path.join(tempDir, 'frame.png');
+  try {
+    await fs.writeFile(inputPath, source);
+    await execFileAsync('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-ss', '0', '-i', inputPath,
+      '-frames:v', '1', framePath,
+    ], {
+      timeout: LOCAL_COLOR_ANALYSIS_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
     });
-    client.once('error', (err: Error) => {
-      clearTimeout(t);
-      reject(err);
-    });
-  });
+    const stats = await sharp(framePath).stats();
+    const means = stats.channels.slice(0, 3).map((channel) => Math.round(channel.mean));
+    const hex = `#${means.map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+    return {
+      dominant_colors: [[hex, 1]],
+      contrast_ratio: 4.5,
+      analysis: 'ffmpeg-sharp-frame',
+    };
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 async function startWorkers() {
   const redisUrl = process.env.REDIS_URL;
   let connection: IORedis | null = null;
+  const qNames = CORE_QUEUE_NAMES;
+  const queuePrefix = coreQueuePrefix();
+  const instanceId = process.env.WORKER_INSTANCE_ID || `${process.env.HOSTNAME || 'worker'}-${process.pid}`;
+  const concurrency = Number(process.env.WORKER_CONCURRENCY || 1);
+  const shutdownTimeoutMs = Number(process.env.WORKER_SHUTDOWN_TIMEOUT_MS || 60_000);
 
   // Initialize Redis: lazyConnect true. If ioredis throws "already connecting/connected", wait for ready.
   // BullMQ requires a fully ready connection (ready event); we never pass a lazy/unready client to Queue/QueueEvents.
   if (redisUrl) {
     const client = new IORedis(redisUrl, {
       lazyConnect: true,
-      maxRetriesPerRequest: 3,
+      maxRetriesPerRequest: null,
       enableReadyCheck: true,
       retryStrategy: (times: number) => {
         const delay = Math.min(times * 50, 2000);
@@ -47,11 +84,17 @@ async function startWorkers() {
       },
       connectTimeout: 5000,
     } as any);
+    client.on('error', (error) => {
+      console.error(JSON.stringify({
+        event: 'worker_redis_error',
+        error: error.message,
+      }));
+    });
 
     try {
-      const pong = await client.ping();
+      await withDeadline(client.connect(), 7_000, 'Redis startup deadline exceeded');
+      const pong = await withDeadline(client.ping(), 2_000, 'Redis PING deadline exceeded');
       if (pong === 'PONG') {
-        await waitForReady(client);
         console.log('Worker Redis connected');
         connection = client;
       } else {
@@ -60,28 +103,20 @@ async function startWorkers() {
       }
     } catch (e: any) {
       const msg = e?.message || String(e);
-      if (/already connecting|already connected/i.test(msg)) {
-        try {
-          await waitForReady(client);
-          console.log('Worker Redis connected');
-          connection = client;
-        } catch (waitErr: any) {
-          console.warn('Worker Redis unavailable, running without queues', waitErr?.message || waitErr);
-          connection = null;
-        }
-      } else {
-        console.warn('Worker Redis unavailable, running without queues', msg);
-        connection = null;
-      }
+      console.warn('Worker Redis unavailable, running without queues', msg);
+      connection = null;
+      if (!connection) client.disconnect();
     }
   } else {
     console.warn('REDIS_URL not set; worker will idle');
   }
+  if (process.env.NODE_ENV === 'production' && !connection) {
+    throw new Error('Redis is required for the production worker');
+  }
 
   // Process the four API queues (captions, ad, color, video-transform). Connection is ready before use.
-  const qNames = ['captions', 'ad', 'color', 'video-transform'] as const;
-  const queues = connection ? qNames.map((n) => new Queue(n, { connection })) : [];
-  const events = connection ? qNames.map((n) => new QueueEvents(n, { connection })) : [];
+  const queues = connection ? qNames.map((n) => new Queue(n, { connection, prefix: queuePrefix })) : [];
+  const events = connection ? qNames.map((n) => new QueueEvents(n, { connection, prefix: queuePrefix })) : [];
 
   // Use shared database pool from API service (if available) or create minimal pool
   // Note: Worker runs in separate process, so we create a minimal pool with proper config
@@ -93,7 +128,7 @@ async function startWorkers() {
     const { Pool } = await import('pg');
     db = new Pool({
       connectionString: databaseUrl,
-      ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined as any,
+      ssl: databaseSslConfig(),
       max: 5, // Worker needs fewer connections than API
       min: 1,
       idleTimeoutMillis: 30_000,
@@ -109,7 +144,16 @@ async function startWorkers() {
     db.on('connect', () => {
       console.log('[Worker DB Pool] New client connected');
     });
+      try {
+        await db.query('SELECT 1');
+      } catch (err) {
+        if (process.env.NODE_ENV === 'production') throw err;
+        console.warn('[Worker DB Pool] startup check failed');
+      }
+  } else if (process.env.NODE_ENV === 'production') {
+    throw new Error('DATABASE_URL is required for the production worker');
   }
+  if (connection) await writeHeartbeat(connection as any, queuePrefix, { instanceId, state: 'starting', version: process.env.REVISION || 'unknown', queues: [...qNames], updatedAt: Date.now() });
 
   async function transcribeWithAssemblyAI(audioUrl: string, opts: { language?: string } = {}): Promise<{ segments: Array<{ start: number; end: number; text: string }> }> {
     const apiKey = process.env.ASSEMBLYAI_API_KEY || '';
@@ -213,41 +257,28 @@ async function startWorkers() {
     console.log('🔧 Creating BullMQ Workers...');
     
     // captions
-    new Worker('captions', async (job) => {
-      console.log('🎬 Captions job started:', job.id, job.data);
+    const workers: Worker[] = [];
+    workers.push(new Worker('captions', async (job) => {
+      console.log('🎬 Captions job started:', {
+        jobId: job.id,
+        tenantId: job.data?.tenantId,
+        source: safeMediaSourceForLog(job.data?.videoUrl),
+      });
       const { videoUrl, language = 'en', tenantId } = job.data || {};
       if (!videoUrl) {
-        console.error('❌ Missing videoUrl in job data');
-        return { ok: false, error: 'missing_video_url' };
+        throw new Error('missing_video_url');
       }
-      console.log('🎯 Processing captions for:', videoUrl);
-      let degraded = false;
-      let segments: Array<{ start: number; end: number; text: string }>;
-      try {
-        const result = await transcribeWithAssemblyAI(videoUrl, { language });
-        segments = result.segments;
-        // Check if transcription returned the no-key placeholder
-        if (segments.length === 1 && segments[0].text.includes('Transcript unavailable')) {
-          degraded = true;
-          console.warn('⚠️ Captions degraded: ASSEMBLYAI_API_KEY not configured');
-        }
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        console.error('⚠️ Captions transcription failed, producing degraded placeholder:', msg);
-        degraded = true;
-        segments = [{ start: 0, end: 5, text: `[Transcription unavailable: ${msg}]` }];
-      }
+      console.log('🎯 Processing captions source:', safeMediaSourceForLog(videoUrl));
+      const result = await transcribeWithAssemblyAI(videoUrl, { language });
+      const segments = result.segments;
       const vtt = toVtt(segments);
       const key = `artifacts/${tenantId || 'anon'}/${job.id}.vtt`;
-      try {
-        await uploadToR2(key, Buffer.from(vtt, 'utf-8'), 'text/vtt');
-        console.log(degraded ? '⚠️ Captions completed (degraded):' : '✅ Captions completed:', key);
-        return { ok: true, degraded, artifactKey: key, tenantId };
-      } catch (error) {
-        console.error('⚠️ Failed to upload captions to R2:', error instanceof Error ? error.message : String(error));
-        return { ok: true, degraded: true, tenantId };
-      }
-    }, { connection });
+      const body = Buffer.from(vtt, 'utf-8');
+      await uploadToR2(key, body, 'text/vtt');
+      if (tenantId && db) await recordWorkerCompletion(db, { queueName: job.queueName, jobId: String(job.id), tenantId, egressBytes: body.length });
+      console.log('✅ Captions completed:', key);
+      return { ok: true, artifactKey: key, tenantId };
+    }, { connection, prefix: queuePrefix, concurrency }));
 
     // Minimal valid silent MP3: MPEG1 Layer III, 32kbps, 44100Hz, mono, 3 frames (~78ms)
     const SILENCE_MP3 = (() => {
@@ -259,42 +290,29 @@ async function startWorkers() {
     // ad (TTS)
     const openaiKey = process.env.OPENAI_API_KEY || '';
     const openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
-    new Worker('ad', async (job) => {
-      console.log('🎵 AD job started:', job.id, job.data);
+    workers.push(new Worker('ad', async (job) => {
+      console.log('🎵 AD job started:', {
+        jobId: job.id,
+        tenantId: job.data?.tenantId,
+        enabled: job.data?.enabled,
+      });
       const { videoUrl: adVideoUrl, text, language = 'en', enabled = true, speed = 1.0, tenantId } = job.data || {};
 
       // If AD is disabled for this preset, produce a minimal degraded marker
       if (!enabled) {
         const key = `artifacts/${tenantId || 'anon'}/${job.id}.mp3`;
         await uploadToR2(key, SILENCE_MP3, 'audio/mpeg');
+        if (tenantId && db) await recordWorkerCompletion(db, { queueName: job.queueName, jobId: String(job.id), tenantId, egressBytes: SILENCE_MP3.length });
         console.log('⚠️ AD skipped (disabled for preset):', key);
         return { ok: true, degraded: true, artifactKey: key, tenantId };
       }
 
       let body: Buffer = SILENCE_MP3;
       const ct = 'audio/mpeg';
-      let degraded = false;
 
       if (openai) {
         try {
-          // Determine text to speak: use explicit text, or generate a brief AD script
-          let adText = text;
-          if (!adText) {
-            try {
-              const chat = await openai.chat.completions.create({
-                model: 'gpt-4o-mini',
-                messages: [
-                  { role: 'system', content: 'You are an accessibility audio description writer. Generate a brief, clear audio description introduction for a video. Keep it under 3 sentences. Be descriptive of what a viewer might see.' },
-                  { role: 'user', content: `Write a short audio description for this video: ${adVideoUrl || 'unknown video'}` },
-                ],
-                max_tokens: 150,
-              });
-              adText = chat.choices[0]?.message?.content || 'Audio description is being generated for this content.';
-            } catch (chatErr) {
-              console.warn('⚠️ OpenAI chat failed for AD script:', chatErr instanceof Error ? chatErr.message : String(chatErr));
-              adText = 'Audio description is being generated for this content.';
-            }
-          }
+          const adText = await resolveAudioDescriptionText(openai, text, adVideoUrl);
 
           const resp: any = await openai.audio.speech.create({
             model: 'tts-1',
@@ -307,47 +325,45 @@ async function startWorkers() {
           if (arrayBuffer) {
             body = Buffer.from(new Uint8Array(arrayBuffer as ArrayBuffer));
           } else {
-            degraded = true;
-            console.warn('⚠️ OpenAI TTS returned no audio buffer');
+            throw new Error('OpenAI TTS returned no audio buffer');
           }
         } catch (error) {
-          degraded = true;
-          console.error('⚠️ OpenAI TTS failed, using degraded fallback:', error instanceof Error ? error.message : String(error));
+          console.error('OpenAI TTS failed:', error instanceof Error ? error.message : String(error));
+          throw error;
         }
       } else {
-        degraded = true;
-        console.warn('⚠️ OpenAI API key not configured, AD degraded');
+        throw new Error('OPENAI_API_KEY not configured');
       }
 
       const key = `artifacts/${tenantId || 'anon'}/${job.id}.mp3`;
-      try {
-        await uploadToR2(key, body, ct);
-        console.log(degraded ? '⚠️ AD completed (degraded):' : '✅ AD completed:', key);
-        return { ok: true, degraded, artifactKey: key, tenantId };
-      } catch (error) {
-        console.error('⚠️ Failed to upload AD to R2:', error instanceof Error ? error.message : String(error));
-        return { ok: true, degraded: true, tenantId };
-      }
-    }, { connection });
+      await uploadToR2(key, body, ct);
+      if (tenantId && db) await recordWorkerCompletion(db, { queueName: job.queueName, jobId: String(job.id), tenantId, egressBytes: body.length });
+      console.log('✅ AD completed:', key);
+      return { ok: true, artifactKey: key, tenantId };
+    }, { connection, prefix: queuePrefix, concurrency }));
 
     // color (Cloudinary/ffmpeg real implementation)
-    new Worker('color', async (job) => {
-      console.log('🎨 Color job started:', job.id, job.data);
+    workers.push(new Worker('color', async (job) => {
+      console.log('🎨 Color job started:', {
+        jobId: job.id,
+        tenantId: job.data?.tenantId,
+        source: safeMediaSourceForLog(job.data?.videoUrl),
+      });
       const { videoUrl, tenantId } = job.data || {};
       if (!videoUrl) {
-        console.error('❌ Missing videoUrl in job data');
-        return { ok: false, error: 'missing_video_url' };
+        throw new Error('missing_video_url');
       }
       
       let summary: any = { dominant_colors: [], contrast_ratio: 4.5 };
       let degraded = true; // default summary is degraded; cleared if real analysis succeeds
+      let source: { body: Buffer; contentType: string } | undefined;
       
       try {
         // Use Cloudinary for video analysis if CLOUDINARY_URL is available
         const cloudinaryUrl = process.env.CLOUDINARY_URL;
         if (cloudinaryUrl) {
           // Cloudinary receives uploaded bytes, not an untrusted remote URL.
-          const source = await downloadExternalMedia(videoUrl);
+          source = await downloadExternalMedia(videoUrl);
           // Extract credentials from CLOUDINARY_URL: cloudinary://api_key:api_secret@cloud_name
           const match = cloudinaryUrl.match(/cloudinary:\/\/(\d+):([\w-]+)@([\w-]+)/);
           if (match) {
@@ -434,94 +450,85 @@ async function startWorkers() {
           console.warn('⚠️ CLOUDINARY_URL not configured, using degraded default summary');
         }
       } catch (error) {
-        console.error('⚠️ Cloudinary analysis failed, using degraded fallback:', error instanceof Error ? error.message : String(error));
-        // Keep default summary
+        console.error('Cloudinary analysis failed:', error instanceof Error ? error.message : String(error));
       }
-      
+      if (degraded) {
+        try {
+          source ||= await downloadExternalMedia(videoUrl);
+          summary = await analyzeVideoColorsLocally(source.body);
+          degraded = false;
+          console.log('✅ Local FFmpeg color analysis completed');
+        } catch (error) {
+          console.error('Local color analysis failed:', error instanceof Error ? error.message : String(error));
+          throw new Error('local_color_analysis_failed');
+        }
+      }
       const key = `artifacts/${tenantId || 'anon'}/${job.id}.json`;
-      try {
-        await uploadToR2(key, Buffer.from(JSON.stringify(summary)), 'application/json');
-        console.log(degraded ? '⚠️ Color completed (degraded):' : '✅ Color completed:', key);
-        return { ok: true, degraded, artifactKey: key, tenantId };
-      } catch (error) {
-        console.error('⚠️ Failed to upload color analysis to R2:', error instanceof Error ? error.message : String(error));
-        return { ok: true, degraded: true, tenantId };
-      }
-    }, { connection });
+      const body = Buffer.from(JSON.stringify(summary));
+      await uploadToR2(key, body, 'application/json');
+      if (tenantId && db) await recordWorkerCompletion(db, { queueName: job.queueName, jobId: String(job.id), tenantId, egressBytes: body.length });
+      console.log('✅ Color completed:', key);
+      return { ok: true, artifactKey: key, tenantId };
+    }, { connection, prefix: queuePrefix, concurrency }));
 
     // video-transform worker
-    createVideoTransformWorker(connection);
+    workers.push(createVideoTransformWorker(connection, queuePrefix, concurrency, async (completion) => {
+      if (db) await recordWorkerCompletion(db, completion);
+    }));
     console.log('✅ Video transform worker registered');
-  }
-
-  // Helper function for retrying DB operations
-  async function retryDbOperation<T>(
-    operation: () => Promise<T>,
-    maxRetries: number = 3,
-    initialDelay: number = 100
-  ): Promise<T> {
-    let lastError: Error | unknown;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        return await operation();
-      } catch (error: any) {
-        lastError = error;
-        
-        // Don't retry on non-transient errors
-        const isTransient = 
-          error?.code === 'ECONNREFUSED' ||
-          error?.code === 'ETIMEDOUT' ||
-          error?.message?.includes('Connection is closed') ||
-          error?.message?.includes('terminating connection');
-        
-        if (!isTransient || attempt === maxRetries) {
-          throw error;
-        }
-        
-        // Exponential backoff
-        const delay = initialDelay * Math.pow(2, attempt);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        console.warn(`[Worker DB Retry] Attempt ${attempt + 1}/${maxRetries + 1} failed, retrying in ${delay}ms...`);
-      }
+    for (const worker of workers) {
+      worker.on('failed', (job, error) => console.error(JSON.stringify({ event: 'worker_job_failed', queue: worker.name, jobId: job?.id, attemptsMade: job?.attemptsMade, error: error.message })));
+      worker.on('stalled', (jobId) => console.error(JSON.stringify({ event: 'worker_job_stalled', queue: worker.name, jobId })));
+      worker.on('error', (error) => console.error(JSON.stringify({ event: 'worker_runtime_error', queue: worker.name, error: error.message })));
     }
-    throw lastError;
+    for (const event of events) {
+      event.on('error', (error) => console.error(JSON.stringify({ event: 'worker_queue_events_error', queue: event.name, error: error.message })));
+    }
+    await writeHeartbeat(connection as any, queuePrefix, { instanceId, state: 'ready', version: process.env.REVISION || 'unknown', queues: [...qNames], updatedAt: Date.now() });
+    const heartbeatTimer = setInterval(() => {
+      void writeHeartbeat(connection as any, queuePrefix, { instanceId, state: 'ready', version: process.env.REVISION || 'unknown', queues: [...qNames], updatedAt: Date.now() })
+        .catch((error) => console.error(JSON.stringify({ event: 'worker_heartbeat_failed', error: error instanceof Error ? error.message : String(error) })));
+    }, 15_000);
+    let shuttingDown = false;
+    const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(JSON.stringify({ event: 'worker_draining', signal }));
+      const close = async () => {
+        clearInterval(heartbeatTimer);
+        await writeHeartbeat(connection as any, queuePrefix, { instanceId, state: 'draining', version: process.env.REVISION || 'unknown', queues: [...qNames], updatedAt: Date.now() });
+        await Promise.all(workers.map((worker) => worker.close()));
+        await Promise.all(events.map((event) => event.close()));
+        await Promise.all(queues.map((queue) => queue.close()));
+        if (db) await db.end();
+        if (connection.status === 'ready') await connection.quit();
+        else connection.disconnect();
+      };
+      try {
+        await Promise.race([close(), new Promise((_, reject) => setTimeout(() => reject(new Error('shutdown timeout')), shutdownTimeoutMs))]);
+        process.exit(0);
+      } catch (error) {
+        console.error(JSON.stringify({ event: 'worker_shutdown_failed', error: error instanceof Error ? error.message : String(error) }));
+        process.exit(1);
+      }
+    };
+    process.once('SIGTERM', () => void shutdown('SIGTERM'));
+    process.once('SIGINT', () => void shutdown('SIGINT'));
   }
 
   for (const ev of events) {
-    ev.on('completed', async ({ jobId, returnvalue }) => {
-      try {
-        console.log('Job completed', jobId);
-        if (!db) return;
-        const payload: any = typeof returnvalue === 'string'
-          ? (() => { try { return JSON.parse(returnvalue as unknown as string); } catch { return {}; } })()
-          : (returnvalue as any) || {};
-        const tenantId = (payload && payload.tenantId) as string | undefined;
-        if (!tenantId) return;
-        const minutes = Number((payload && payload.minutes) || 0);
-        const egressBytes = Number((payload && payload.egressBytes) || 0);
-        
-        // Retry DB operations with exponential backoff
-        await retryDbOperation(async () => {
-          await db.query(
-            `insert into usage_counters(tenant_id, period_start, minutes_used, jobs, egress_bytes)
-             values ($1, date_trunc('month', now())::date, 0, 0, 0)
-             on conflict (tenant_id) do nothing`,
-            [tenantId]
-          );
-          await db.query(
-            `update usage_counters set minutes_used = minutes_used + $2, egress_bytes = egress_bytes + $3 where tenant_id = $1`,
-            [tenantId, minutes, egressBytes]
-          );
-        }, 3, 100);
-      } catch (e) {
-        console.error('Failed to update usage on completion after retries', e);
-        // Don't crash worker on usage update failures
-      }
-    });
+    ev.on('completed', ({ jobId }) => console.log(JSON.stringify({ event: 'worker_job_completed', queue: ev.name, jobId })));
   }
 
   console.log('Worker running for queues', qNames.join(', '));
 }
 
-// Start the workers
-startWorkers().catch(console.error);
+// Startup failures are fatal. A Reserved VM must not appear healthy while idle
+// because an essential dependency could not be initialized.
+startWorkers().catch((error) => {
+  console.error(JSON.stringify({
+    event: 'worker_startup_failed',
+    error: error instanceof Error ? error.message : 'unknown startup failure',
+  }));
+  process.exit(1);
+});

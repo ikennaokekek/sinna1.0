@@ -120,6 +120,16 @@ type Request = (
   init: RequestInit,
 ) => Promise<Response>;
 
+export function createPinnedLookup(pinned: { address: string; family: 4 | 6 }) {
+  return (_hostname: string, options: any, callback: any): void => {
+    if (options?.all) {
+      callback(null, [{ address: pinned.address, family: pinned.family }]);
+      return;
+    }
+    callback(null, pinned.address, pinned.family);
+  };
+}
+
 function nodeRequest(url: URL, pinned: { address: string; family: 4 | 6 }, init: RequestInit): Promise<Response> {
   return new Promise((resolve, reject) => {
     const requester = url.protocol === 'https:' ? https.request : http.request;
@@ -131,7 +141,7 @@ function nodeRequest(url: URL, pinned: { address: string; family: 4 | 6 }, init:
       method: init.method || 'GET',
       headers: Object.fromEntries(headers.entries()),
       servername: url.hostname.replace(/^\[|\]$/g, ''),
-      lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family),
+      lookup: createPinnedLookup(pinned),
     }, (response) => {
       const chunks: Buffer[] = [];
       const contentLength = Number(response.headers['content-length'] || 0);

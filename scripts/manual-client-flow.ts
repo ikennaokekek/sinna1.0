@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Full manual client walkthrough: health → subscription → usage → billing checkout → job(s) with preset(s).
+ * Full manual Core walkthrough: health → subscription → usage → job(s) with preset(s).
  *
  * Use your tenant API key (sent as x-api-key), not Stripe secrets (sk_test_/sk_live_).
  * Do not paste keys into chat. Export in your shell:
@@ -11,7 +11,6 @@
  * Optional:
  *   TEST_VIDEO_URL — default Big Buck Bunny sample MP4
  *   PRESETS_CSV — presets to run sequentially (default: everyday). Example: everyday,adhd,low_vision
- *   SKIP_BILLING=1 — skip POST /v1/billing/subscribe
  *   SKIP_JOBS=1 — skip job create + poll (subscription/usage only)
  *   SMOKE_POLL_INTERVAL_SEC, SMOKE_POLL_TIMEOUT_SEC — same as pnpm smoke:staging
  *
@@ -138,7 +137,6 @@ async function pollJob(base: string, key: string, jobId: string): Promise<void> 
 async function main(): Promise<void> {
   const base = baseUrl();
   const key = apiKey();
-  const skipBilling = process.env.SKIP_BILLING === '1';
   const skipJobs = process.env.SKIP_JOBS === '1';
 
   console.log('Sinna manual client flow');
@@ -172,31 +170,6 @@ async function main(): Promise<void> {
     '  (Note: usage may reflect in-memory demo state unless your tenant is wired through billing webhooks.)'
   );
 
-  if (!skipBilling) {
-    section('4) Subscribe as a client — POST /v1/billing/subscribe');
-    const billRes = await fetch(`${base}/v1/billing/subscribe`, {
-      method: 'POST',
-      headers: { 'x-api-key': key },
-    });
-    const billJson = (await billRes.json()) as Json;
-    console.log(`  HTTP ${billRes.status}`);
-    console.log('  ', JSON.stringify(billJson, null, 2).split('\n').join('\n   '));
-    if (billRes.status === 200 && billJson.data && typeof billJson.data === 'object') {
-      const url = (billJson.data as { url?: string }).url;
-      if (url) {
-        console.log('\n  → Open this URL in a browser to complete Stripe Checkout (test card in Stripe test mode):');
-        console.log('   ', url);
-      }
-    } else if (billRes.status === 503) {
-      console.log(
-        '\n  Expected locally if Stripe is not configured (STRIPE_SECRET_KEY / STRIPE_STANDARD_PRICE_ID).'
-      );
-      console.log('  On production/staging with Stripe, you would open the returned checkout URL.');
-    }
-  } else {
-    section('4) Subscribe — skipped (SKIP_BILLING=1)');
-  }
-
   const repoPresets = loadPresetIdsFromRepo();
   if (repoPresets.length) {
     section('Preset IDs available in repo config/presets.json');
@@ -204,7 +177,7 @@ async function main(): Promise<void> {
   }
 
   if (skipJobs) {
-    section('5) Jobs — skipped (SKIP_JOBS=1)');
+    section('4) Jobs — skipped (SKIP_JOBS=1)');
     console.log('Done (subscription/usage path only).');
     return;
   }

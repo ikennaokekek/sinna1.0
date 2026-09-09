@@ -8,7 +8,7 @@ const { Pool, query, release } = vi.hoisted(() => ({
 
 vi.mock('pg', () => ({ Pool }));
 
-import { resetDbClientsForTests, withTransaction } from './db';
+import { resetDbClientsForTests, withConnection, withTransaction } from './db';
 
 describe('database transaction rollback', () => {
   beforeEach(() => {
@@ -41,5 +41,13 @@ describe('database transaction rollback', () => {
       'ROLLBACK',
     ]);
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('destroys a quarantined connection instead of returning it to the pool', async () => {
+    const ambiguous = new Error('database outcome unknown');
+    await withConnection(async (_client, lease) => {
+      lease.quarantine(ambiguous);
+    });
+    expect(release).toHaveBeenCalledWith(ambiguous);
   });
 });

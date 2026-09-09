@@ -47,6 +47,7 @@ export const ErrorCodes = {
   STRIPE_UNCONFIGURED: 'stripe_unconfigured',
   MISSING_PRICE: 'missing_price',
   STRIPE_ERROR: 'stripe_error',
+  SERVICE_UNAVAILABLE: 'service_unavailable',
   INTERNAL_ERROR: 'internal_error',
   TENANT_NOT_FOUND: 'tenant_not_found',
 } as const;

@@ -1,30 +1,31 @@
-name: CI (infra)
+name: CI (infra manual validation)
 
 on:
   workflow_dispatch:
+
+# The canonical primary CI workflow is .github/workflows/ci.yaml.
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'pnpm'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
-
-      - name: Install deps
+          cache: pnpm
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Build all packages
-        run: pnpm -r build
-
-
+      - name: Build
+        run: pnpm build
+      - name: Unit tests
+        run: pnpm test:unit

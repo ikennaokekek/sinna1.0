@@ -1,4 +1,5 @@
 import IORedis from 'ioredis';
+import { withDeadline } from '@sinna/types';
 
 let singleton: IORedis | null = null;
 let connectionPromise: Promise<IORedis> | null = null;
@@ -35,7 +36,7 @@ export const redisConnection: IORedis = (() => {
       const delay = Math.min(times * 50, 2000);
       return delay;
     },
-    connectTimeout: 5000,
+    connectTimeout: 1_500,
   });
   
   // Add error handlers (using console for module-level logging)
@@ -66,11 +67,15 @@ export const redisConnection: IORedis = (() => {
  * Verify Redis connection is working
  * Call this during startup to ensure Redis is available before using queues
  */
-export async function verifyRedisConnection(): Promise<boolean> {
+export async function verifyRedisConnection(timeoutMs = 1_800): Promise<boolean> {
   if (!connectionPromise) {
-    connectionPromise = (async () => {
+    connectionPromise = withDeadline((async () => {
       try {
-        if (!redisConnection.status || redisConnection.status === 'end') {
+        if (
+          !redisConnection.status ||
+          redisConnection.status === 'wait' ||
+          redisConnection.status === 'end'
+        ) {
           await redisConnection.connect();
         }
         // Test connection with PING
@@ -87,13 +92,15 @@ export async function verifyRedisConnection(): Promise<boolean> {
         console.error('[Redis Connection] ❌ Redis connection failed:', errMsg);
         throw error;
       }
-    })();
+    })(), timeoutMs, 'Redis startup deadline exceeded');
   }
   
   try {
     await connectionPromise;
     return true;
   } catch {
+    connectionPromise = null;
+    redisConnection.disconnect(false);
     return false;
   }
 }

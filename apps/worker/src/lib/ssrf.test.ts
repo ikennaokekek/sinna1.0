@@ -1,8 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { UnsafeUrlError, createSsrfSafeFetcher } from './ssrf';
+import { UnsafeUrlError, createPinnedLookup, createSsrfSafeFetcher } from './ssrf';
 
 describe('worker SSRF-safe fetcher', () => {
+  it('returns the pinned address shape requested by Node networking', () => {
+    const lookup = createPinnedLookup({ address: '8.8.8.8', family: 4 });
+    const callback = vi.fn();
+
+    lookup('media.example', { all: true }, callback);
+    expect(callback).toHaveBeenCalledWith(null, [{ address: '8.8.8.8', family: 4 }]);
+
+    callback.mockClear();
+    lookup('media.example', {}, callback);
+    expect(callback).toHaveBeenCalledWith(null, '8.8.8.8', 4);
+  });
+
   it('revalidates redirect destinations before connecting', async () => {
     const lookup = vi.fn(async (hostname: string) => {
       if (hostname === 'public.example') return [{ address: '8.8.8.8' }];
@@ -66,9 +78,11 @@ describe('worker SSRF-safe fetcher', () => {
     expect(index).toContain('const source = await downloadExternalMedia(audioUrl)');
     expect(index).toContain('audio_url: uploadedAudioUrl');
     expect(index).not.toContain('audio_url: audioUrl');
-    expect(index).toContain('const source = await downloadExternalMedia(videoUrl)');
+    expect(index).toContain('source = await downloadExternalMedia(videoUrl)');
     expect(index).not.toContain("uploadForm.append('file', videoUrl)");
     const fetcherSource = readFileSync('src/lib/ssrf.ts', 'utf8');
     expect(fetcherSource).toContain('const response = await safeExternalFetch(value)');
+    expect(index).toContain('timeout: LOCAL_COLOR_ANALYSIS_TIMEOUT_MS');
+    expect(index).toContain("killSignal: 'SIGKILL'");
   });
 });

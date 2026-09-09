@@ -10,6 +10,7 @@ export default defineConfig({
   timeout: 60000,
   fullyParallel: false,
   use: {
-    baseURL: process.env.E2E_BASE_URL || 'http://127.0.0.1:4000',
+    baseURL:
+      process.env.STAGING_E2E_BASE_URL || process.env.E2E_BASE_URL || 'http://127.0.0.1:4000',
   },
 });

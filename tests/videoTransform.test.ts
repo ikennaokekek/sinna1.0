@@ -128,14 +128,16 @@ describe('Video Transformation Tests', () => {
             break;
 
           case 'epilepsy_flash':
+            expect(preset.adEnabled).toBe(false);
             expect(config.flashReduce).toBe(true);
-            expect(config.brightness).toBe(-0.05);
-            expect(config.contrast).toBe(-0.1);
+            expect(config.flashRiskEvidence).toBe(true);
             break;
 
           case 'epilepsy_noise':
+            expect(preset.adEnabled).toBe(false);
             expect(config.audioSmooth).toBe(true);
             expect(config.lowPassFilter).toBe(true);
+            expect(config.audioRiskEvidence).toBe(true);
             break;
 
           case 'cognitive_load':
@@ -378,15 +380,24 @@ describe('Video Transformation Tests', () => {
       if (!config) return;
       
       // Expected FFmpeg audio filters
-      const expectedFilters = ['lowpass=f=8000', 'highpass=f=60', 'volume=0.95'];
+      const expectedFilters = [
+        'highpass=f=80',
+        'lowpass=f=12000',
+        'acompressor',
+        'alimiter',
+        'loudnorm',
+      ];
       
       if (config.lowPassFilter) {
-        expect(expectedFilters).toContain('lowpass=f=8000');
+        expect(expectedFilters).toContain('lowpass=f=12000');
       }
       if (config.audioSmooth) {
-        expect(expectedFilters).toContain('highpass=f=60');
-        expect(expectedFilters).toContain('volume=0.95');
+        expect(expectedFilters).toContain('highpass=f=80');
+        expect(expectedFilters).toContain('acompressor');
+        expect(expectedFilters).toContain('alimiter');
+        expect(expectedFilters).toContain('loudnorm');
       }
+      expect(config.audioRiskEvidence).toBe(true);
     });
 
     it('should validate FFmpeg filter commands for cognitive_load', () => {
@@ -420,22 +431,29 @@ describe('Video Transformation Tests', () => {
       expect(cloudinaryTransform.effect).toBe('colorblind_correction');
     });
 
-    it('should validate Cloudinary transformations for epilepsy_flash', () => {
+    it('should require timeline evidence for epilepsy_flash', () => {
       const config = presets.epilepsy_flash?.videoTransformConfig;
       
       if (!config) return;
       
       expect(config.flashReduce).toBe(true);
-      expect(config.brightness).toBe(-0.05);
-      expect(config.contrast).toBe(-0.1);
-      
-      // Cloudinary SDK transformations
-      const cloudinaryTransforms = [
-        { effect: 'brightness:-20' },
-        { effect: 'contrast:-10' },
-      ];
-      
-      expect(cloudinaryTransforms.length).toBeGreaterThan(0);
+      expect(config.flashRiskEvidence).toBe(true);
+      expect(config.brightness).toBeUndefined();
+      expect(config.contrast).toBeUndefined();
+    });
+
+    it('uses bounded temporal and dynamic-audio processing for epilepsy golden paths', () => {
+      const source = fs.readFileSync(
+        path.join(__dirname, '../apps/worker/src/videoTransformWorker.ts'),
+        'utf8',
+      );
+      expect(source).toContain("tmix=frames=5:weights='1 2 3 2 1'");
+      expect(source).toContain('acompressor=threshold=0.125:ratio=4');
+      expect(source).toContain('dynaudnorm=f=150:g=9');
+      expect(source).toContain('alimiter=limit=0.8');
+      expect(source).toContain('loudnorm=I=-18:LRA=7:TP=-1.5');
+      expect(source).toContain('timeout: VIDEO_TRANSFORM_TIMEOUT_MS');
+      expect(source).toContain('-evidence.json');
     });
   });
 });

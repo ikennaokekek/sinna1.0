@@ -4,6 +4,8 @@ Use `docs/ENVIRONMENT_VARIABLES.md` as the complete rebuild manifest, including
 non-secret runtime, migration, test, smoke, and operational variables. This file
 identifies which entries need secret storage and the security boundaries they
 protect. All values in `env.example` are placeholders.
+See `docs/CORE_INFRASTRUCTURE_STEP6.md` for the per-service least-privilege
+matrix. The checked-in Replit contract is non-mutating.
 
 ## Store as secrets
 
@@ -14,6 +16,7 @@ protect. All values in `env.example` are placeholders.
 | Payments | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY_LIVE`, `STRIPE_WEBHOOK_SECRET_LIVE`, `STRIPE_LIVE_SECRET_KEY` |
 | Core service authentication | `REPLIT_SYNC_SECRET`, `ADMIN_API_KEY`, `SEED_API_KEY_SECRET` |
 | Email and observability | `RESEND_API_KEY`, `SENDGRID_API_KEY`, `SENTRY_DSN` |
+| Staging E2E | `STAGING_E2E_BASE_URL`, `STAGING_E2E_API_KEY` |
 | Test/operations | `API_KEY`, `TEST_API_KEY`, `TEST_MIGRATION_DATABASE_URL`, `RENDER_API_KEY`, `SLACK_WEBHOOK_URL` |
 
 Treat `R2_ACCOUNT_ID`, price IDs, bucket names, endpoint URLs, email addresses,
@@ -31,6 +34,8 @@ organization classifies them more restrictively.
   issue API keys from that event; onboarding performs provisioning and syncs
   Core with the shared sync secret.
 - Database migrations are explicit operations. Startup does not migrate.
+- Core does not receive `SESSION_SECRET`. Do not give the API media-provider
+  credentials unless that API process actually uses that provider.
 
 ## Operating practice
 
@@ -44,3 +49,6 @@ organization classifies them more restrictively.
    its database.
 5. Never paste real credentials into documentation, examples, source control,
    logs, or support tickets.
+6. Keep staging E2E credentials in the protected GitHub `staging` environment;
+   they must never be production credentials or target production. Configure
+   production credentials only in the protected production account/environment.

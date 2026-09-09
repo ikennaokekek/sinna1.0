@@ -85,7 +85,14 @@ SQL.
 - **Queue**: BullMQ with Redis
 - **Storage**: Cloudflare R2 + signed URLs
 - **Monitoring**: Sentry + Prometheus metrics
-- **Deployment**: Render.com ready
+- **Deployment**: Replit deployment contract; legacy Render blueprint remains manual-only
+- **Deployment topology**: Replit-ready repository contract: public Autoscale
+  API plus private always-on Reserved VM worker in separate Replit
+  project/deployment contexts. See `docs/CORE_INFRASTRUCTURE_STEP6.md`.
+- **Autoscale API contract**: See `infra/replit/core-api-autoscale.yaml` and
+  `docs/CORE_API_REPLIT_STEP7.md`; neither creates a deployment.
+- **Reserved VM worker contract**: See `infra/replit/core-worker-reserved-vm.yaml`
+  and `docs/CORE_WORKER_REPLIT_STEP8.md`; neither creates a deployment.
 
 ## 🏗️ Architecture
 
@@ -154,13 +161,13 @@ Public endpoints (no auth required):
 - `GET /v1/files/:id/sign` - Get signed URL for artifact download
 
 ### Billing & Management
-- `POST /v1/billing/subscribe` - Create Stripe checkout session
+- Checkout creation and plaintext API-key delivery are owned by onboarding, not Core
 - `GET /v1/me/subscription` - Current subscription status
 - `POST /webhooks/stripe` - Stripe webhook endpoint (handles subscription events)
 
 ### Monitoring & Health
-- `GET /health` - System health check (all services)
-- `GET /readiness` - Readiness probe (database only)
+- `GET /health` - Public process liveness
+- `GET /readiness` - Public PostgreSQL/Redis dependency readiness
 - `GET /metrics` - Prometheus metrics
 - `GET /api-docs` - Interactive API documentation (Swagger UI)
 - `GET /v1/demo` - Demo endpoint (no auth required)
@@ -201,25 +208,12 @@ PROVIDER_CAPTIONS_VOD=whisper
 
 ## 🚀 Deployment
 
-### Deploy to Render (Recommended)
-1. Connect your GitHub repository to Render
-2. Configure environment variables in Render dashboard
-3. Deploy using the included `render.yaml`
+SINNA Core uses two dedicated Replit deployment contexts from the same approved
+revision: the API on Autoscale and the worker on a Reserved VM. Follow
+`docs/CORE_INFRASTRUCTURE_STEP6.md` and the contracts in `infra/replit/`.
 
-```bash
-# The render.yaml automatically configures:
-# - API service (web)
-# - Worker service (background)
-# - Auto-scaling
-# - Health checks
-```
-
-### Manual Deployment
-```bash
-npm run build
-npm start              # API server
-npm run start:worker   # Background worker
-```
+`render.yaml` is a disabled legacy reference with `autoDeploy: false` on every
+service. Do not enable or deploy it for the current topology.
 
 ## 📊 Monitoring & Analytics
 
@@ -242,7 +236,7 @@ npm run start:worker   # Background worker
 - ✅ Tests all video transformation presets automatically
 - ✅ Validates queue→worker→R2 flow end-to-end
 - ✅ Auto-fixes missing configurations (videoTransform flags, config objects)
-- ✅ Monitors Render logs every 10 minutes for recurring errors
+- ✅ Supports repository-local diagnostics and reports
 - ✅ Generates detailed reports for audit and debugging
 
 See `tests/AUTOHEAL_README.md` and `scripts/WATCHDOG_README.md` for complete documentation.
