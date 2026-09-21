@@ -30,6 +30,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
+      - name: Install FFmpeg for media-pipeline tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
       - name: Unit tests (API, root Vitest, worker)
         run: pnpm test:unit
       - name: Core infrastructure contract
@@ -81,8 +86,10 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
-      - name: Install psql
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install FFmpeg and psql
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg postgresql-client
+      - name: Verify FFmpeg
+        run: ffmpeg -version
       - name: Step 9 disposable PostgreSQL adversarial tests
         env:
           TEST_MIGRATION_DATABASE_URL: ${{ env.DATABASE_URL }}
