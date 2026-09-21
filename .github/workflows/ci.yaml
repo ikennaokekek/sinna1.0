@@ -96,11 +96,18 @@ jobs:
           CONFIRM_DISPOSABLE_MIGRATION_DATABASE: YES
           DATABASE_SSL_MODE: disable
         run: pnpm test:migrate:integration
+      - name: Reset disposable DB after adversarial migration tests
+        run: |
+          set -euo pipefail
+          # The preceding adversarial suite intentionally creates migration objects.
+          # Recreate the disposable CI database so bootstrap is tested against the
+          # empty database contract it requires.
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS sinna_ci WITH (FORCE);"
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE sinna_ci;"
+          echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/sinna_ci" >> "$GITHUB_ENV"
       - name: Bootstrap, apply, and verify fresh DB migrations
         run: |
           set -euo pipefail
-          # This disposable database starts empty. Bootstrap is intentionally
-          # followed by apply and verification; application startup never migrates.
           pnpm migrate:bootstrap
           pnpm migrate:apply
           pnpm migrate:verify
