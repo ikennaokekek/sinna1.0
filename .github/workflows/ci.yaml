@@ -30,6 +30,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
+      - name: Install FFmpeg for media-pipeline tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
       - name: Unit tests (API, root Vitest, worker)
         run: pnpm test:unit
       - name: Core infrastructure contract
@@ -81,19 +86,28 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
-      - name: Install psql
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install FFmpeg and psql
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg postgresql-client
+      - name: Verify FFmpeg
+        run: ffmpeg -version
       - name: Step 9 disposable PostgreSQL adversarial tests
         env:
           TEST_MIGRATION_DATABASE_URL: ${{ env.DATABASE_URL }}
           CONFIRM_DISPOSABLE_MIGRATION_DATABASE: YES
           DATABASE_SSL_MODE: disable
         run: pnpm test:migrate:integration
+      - name: Reset disposable DB after adversarial migration tests
+        run: |
+          set -euo pipefail
+          # The preceding adversarial suite intentionally creates migration objects.
+          # Recreate the disposable CI database so bootstrap is tested against the
+          # empty database contract it requires.
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS sinna_ci WITH (FORCE);"
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE sinna_ci;"
+          echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/sinna_ci" >> "$GITHUB_ENV"
       - name: Bootstrap, apply, and verify fresh DB migrations
         run: |
           set -euo pipefail
-          # This disposable database starts empty. Bootstrap is intentionally
-          # followed by apply and verification; application startup never migrates.
           pnpm migrate:bootstrap
           pnpm migrate:apply
           pnpm migrate:verify
@@ -118,16 +132,55 @@ jobs:
           fi
       - name: Wait for API
         run: bash scripts/wait-for-api.sh "http://127.0.0.1:${PORT}" 90
-      - name: Start minimal queue workers (BullMQ)
+      - name: Start CI queue workers with API job-state settlement
         run: |
-          nohup node -e "
-            const { Worker } = require('bullmq');
-            const IORedis = require('ioredis');
-            const c = new IORedis(process.env.REDIS_URL);
-            const mk = (q) => new Worker(q, async () => ({ ok: true }), { connection: c });
-            mk('captions'); mk('ad'); mk('color'); mk('video-transform');
-            setInterval(() => {}, 1 << 30);
-          " > worker.log 2>&1 &
+          nohup node - <<'NODE' > worker.log 2>&1 &
+          const { Worker } = require('bullmq');
+          const IORedis = require('ioredis');
+          const { Pool } = require('pg');
+          const connection = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
+          const db = new Pool({ connectionString: process.env.DATABASE_URL });
+          const queues = ['captions', 'ad', 'color', 'video-transform'];
+
+          async function settle(job, status, error) {
+            const id = String(job.data?.jobId || job.data?.id || job.data?.parentJobId || job.id);
+            const queue = job.queueName;
+            const step = queue === 'video-transform' ? 'videoTransform' : queue;
+            // CI deliberately isolates API lifecycle from external media/AI providers.
+            // Mark the queued step terminal so the API aggregate job lifecycle can settle.
+            await db.query(
+              `UPDATE jobs
+                 SET steps = jsonb_set(
+                   COALESCE(steps, '{}'::jsonb),
+                   ARRAY[$2],
+                   COALESCE(steps->$2, '{}'::jsonb) || jsonb_build_object('status',$3::text)
+                 ),
+                 updated_at = NOW()
+               WHERE id::text = $1`,
+              [id, step, status]
+            );
+            const { rows } = await db.query('SELECT steps FROM jobs WHERE id::text = $1', [id]);
+            if (!rows.length) return;
+            const values = Object.values(rows[0].steps || {});
+            const terminal = values.length > 0 && values.every((s) => ['completed','failed','skipped'].includes(s?.status));
+            if (terminal) {
+              const failed = values.some((s) => s?.status === 'failed');
+              await db.query(
+                `UPDATE jobs SET status=$2, error=COALESCE($3,error), completed_at=NOW(), updated_at=NOW() WHERE id::text=$1`,
+                [id, failed ? 'failed' : 'completed', error || null]
+              );
+            }
+          }
+
+          for (const q of queues) {
+            const w = new Worker(q, async (job) => {
+              await settle(job, 'completed');
+              return { ok: true, ci: true };
+            }, { connection });
+            w.on('failed', (job, err) => job && settle(job, 'failed', err.message).catch(console.error));
+          }
+          setInterval(() => {}, 1 << 30);
+          NODE
           echo $! > worker.pid
       - name: Vitest integration smoke (live HTTP)
         env:
