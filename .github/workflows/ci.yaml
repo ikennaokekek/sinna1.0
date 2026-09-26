@@ -132,56 +132,44 @@ jobs:
           fi
       - name: Wait for API
         run: bash scripts/wait-for-api.sh "http://127.0.0.1:${PORT}" 90
-      - name: Start CI queue workers with API job-state settlement
+      - name: Start CI queue workers (BullMQ lifecycle only)
         run: |
+          set -euo pipefail
+          rm -f worker.ready
           nohup node - <<'NODE' > worker.log 2>&1 &
           const { Worker } = require('bullmq');
           const IORedis = require('ioredis');
-          const { Pool } = require('pg');
+          const { writeFileSync } = require('node:fs');
+          const { CORE_QUEUE_NAMES, coreQueuePrefix } = require('./packages/types/dist/queueRuntime.js');
           const connection = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
-          const db = new Pool({ connectionString: process.env.DATABASE_URL });
-          const queues = ['captions', 'ad', 'color', 'video-transform'];
-
-          async function settle(job, status, error) {
-            const id = String(job.data?.jobId || job.data?.id || job.data?.parentJobId || job.id);
-            const queue = job.queueName;
-            const step = queue === 'video-transform' ? 'videoTransform' : queue;
-            // CI deliberately isolates API lifecycle from external media/AI providers.
-            // Mark the queued step terminal so the API aggregate job lifecycle can settle.
-            await db.query(
-              `UPDATE jobs
-                 SET steps = jsonb_set(
-                   COALESCE(steps, '{}'::jsonb),
-                   ARRAY[$2],
-                   COALESCE(steps->$2, '{}'::jsonb) || jsonb_build_object('status',$3::text)
-                 ),
-                 updated_at = NOW()
-               WHERE id::text = $1`,
-              [id, step, status]
-            );
-            const { rows } = await db.query('SELECT steps FROM jobs WHERE id::text = $1', [id]);
-            if (!rows.length) return;
-            const values = Object.values(rows[0].steps || {});
-            const terminal = values.length > 0 && values.every((s) => ['completed','failed','skipped'].includes(s?.status));
-            if (terminal) {
-              const failed = values.some((s) => s?.status === 'failed');
-              await db.query(
-                `UPDATE jobs SET status=$2, error=COALESCE($3,error), completed_at=NOW(), updated_at=NOW() WHERE id::text=$1`,
-                [id, failed ? 'failed' : 'completed', error || null]
-              );
-            }
-          }
-
-          for (const q of queues) {
-            const w = new Worker(q, async (job) => {
-              await settle(job, 'completed');
-              return { ok: true, ci: true };
-            }, { connection });
-            w.on('failed', (job, err) => job && settle(job, 'failed', err.message).catch(console.error));
-          }
-          setInterval(() => {}, 1 << 30);
+          const prefix = coreQueuePrefix();
+          // The API reads BullMQ completion state, not a Postgres jobs table.
+          // These stubs exercise queue lifecycle only; they produce no media artifacts
+          // and must not be counted as real-pipeline / TRL-5 validation evidence.
+          const workers = CORE_QUEUE_NAMES.map((queue) => {
+            const worker = new Worker(queue, async () => ({ ok: true, ci: true }), { connection, prefix });
+            worker.on('error', (error) => { console.error(error); process.exit(1); });
+            worker.on('failed', (job, error) => console.error(queue, job?.id, error));
+            return worker;
+          });
+          Promise.all(workers.map((worker) => worker.waitUntilReady()))
+            .then(() => writeFileSync('worker.ready', 'ready'))
+            .catch((error) => { console.error(error); process.exit(1); });
           NODE
           echo $! > worker.pid
+          for attempt in {1..30}; do
+            if ! kill -0 "$(cat worker.pid)" 2>/dev/null; then
+              cat worker.log
+              exit 1
+            fi
+            if [ -f worker.ready ]; then break; fi
+            sleep 1
+          done
+          if [ ! -f worker.ready ]; then
+            echo "CI workers did not become ready within 30 seconds"
+            cat worker.log
+            exit 1
+          fi
       - name: Vitest integration smoke (live HTTP)
         env:
           E2E_BASE_URL: http://127.0.0.1:4000
@@ -191,7 +179,7 @@ jobs:
         run: pnpm test:integration
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
-      - name: Playwright E2E (health)
+      - name: Playwright E2E (local stubbed queue lifecycle)
         env:
           E2E_BASE_URL: http://127.0.0.1:4000
           API_KEY: ${{ env.CI_TEST_API_KEY }}
@@ -209,7 +197,8 @@ jobs:
               if kill -0 "$PID" 2>/dev/null; then kill -9 "$PID" || true; fi
             fi
           done
-          if [ -f api.log ]; then echo "--- api.log ---"; tail -n 80 api.log; fi
+          if [ -f api.log ]; then tail -n 80 api.log; fi
+          if [ -f worker.log ]; then tail -n 80 worker.log; fi
 
   integration-e2e-staging:
     needs: [build, integration-e2e-local]
