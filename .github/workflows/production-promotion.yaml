@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   verify-staging-revision:
-    if: github.ref == "refs/heads/main"
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Validate confirmation and revision format
@@ -81,7 +81,7 @@ jobs:
             }
   approve-revision:
     needs: verify-staging-revision
-    if: github.ref == "refs/heads/main"
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -101,6 +101,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
+      - name: Install FFmpeg for media-pipeline tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
       - name: Unit tests
         run: pnpm test:unit
       - name: Core infrastructure contract
