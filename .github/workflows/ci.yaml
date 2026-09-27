@@ -30,6 +30,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
+      - name: Install FFmpeg for media-pipeline tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
       - name: Unit tests (API, root Vitest, worker)
         run: pnpm test:unit
       - name: Core infrastructure contract
@@ -81,19 +86,28 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build
         run: pnpm build
-      - name: Install psql
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install FFmpeg and psql
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg postgresql-client
+      - name: Verify FFmpeg
+        run: ffmpeg -version
       - name: Step 9 disposable PostgreSQL adversarial tests
         env:
           TEST_MIGRATION_DATABASE_URL: ${{ env.DATABASE_URL }}
           CONFIRM_DISPOSABLE_MIGRATION_DATABASE: YES
           DATABASE_SSL_MODE: disable
         run: pnpm test:migrate:integration
+      - name: Reset disposable DB after adversarial migration tests
+        run: |
+          set -euo pipefail
+          # The preceding adversarial suite intentionally creates migration objects.
+          # Recreate the disposable CI database so bootstrap is tested against the
+          # empty database contract it requires.
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS sinna_ci WITH (FORCE);"
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -v ON_ERROR_STOP=1 -c "CREATE DATABASE sinna_ci;"
+          echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/sinna_ci" >> "$GITHUB_ENV"
       - name: Bootstrap, apply, and verify fresh DB migrations
         run: |
           set -euo pipefail
-          # This disposable database starts empty. Bootstrap is intentionally
-          # followed by apply and verification; application startup never migrates.
           pnpm migrate:bootstrap
           pnpm migrate:apply
           pnpm migrate:verify
@@ -118,17 +132,44 @@ jobs:
           fi
       - name: Wait for API
         run: bash scripts/wait-for-api.sh "http://127.0.0.1:${PORT}" 90
-      - name: Start minimal queue workers (BullMQ)
+      - name: Start CI queue workers (BullMQ lifecycle only)
         run: |
-          nohup node -e "
-            const { Worker } = require('bullmq');
-            const IORedis = require('ioredis');
-            const c = new IORedis(process.env.REDIS_URL);
-            const mk = (q) => new Worker(q, async () => ({ ok: true }), { connection: c });
-            mk('captions'); mk('ad'); mk('color'); mk('video-transform');
-            setInterval(() => {}, 1 << 30);
-          " > worker.log 2>&1 &
+          set -euo pipefail
+          rm -f worker.ready
+          nohup node - <<'NODE' > worker.log 2>&1 &
+          const { Worker } = require('bullmq');
+          const IORedis = require('ioredis');
+          const { writeFileSync } = require('node:fs');
+          const { CORE_QUEUE_NAMES, coreQueuePrefix } = require('./packages/types/dist/queueRuntime.js');
+          const connection = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
+          const prefix = coreQueuePrefix();
+          // The API reads BullMQ completion state, not a Postgres jobs table.
+          // These stubs exercise queue lifecycle only; they produce no media artifacts
+          // and must not be counted as real-pipeline / TRL-5 validation evidence.
+          const workers = CORE_QUEUE_NAMES.map((queue) => {
+            const worker = new Worker(queue, async () => ({ ok: true, ci: true }), { connection, prefix });
+            worker.on('error', (error) => { console.error(error); process.exit(1); });
+            worker.on('failed', (job, error) => console.error(queue, job?.id, error));
+            return worker;
+          });
+          Promise.all(workers.map((worker) => worker.waitUntilReady()))
+            .then(() => writeFileSync('worker.ready', 'ready'))
+            .catch((error) => { console.error(error); process.exit(1); });
+          NODE
           echo $! > worker.pid
+          for attempt in {1..30}; do
+            if ! kill -0 "$(cat worker.pid)" 2>/dev/null; then
+              cat worker.log
+              exit 1
+            fi
+            if [ -f worker.ready ]; then break; fi
+            sleep 1
+          done
+          if [ ! -f worker.ready ]; then
+            echo "CI workers did not become ready within 30 seconds"
+            cat worker.log
+            exit 1
+          fi
       - name: Vitest integration smoke (live HTTP)
         env:
           E2E_BASE_URL: http://127.0.0.1:4000
@@ -138,7 +179,7 @@ jobs:
         run: pnpm test:integration
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
-      - name: Playwright E2E (health)
+      - name: Playwright E2E (local stubbed queue lifecycle)
         env:
           E2E_BASE_URL: http://127.0.0.1:4000
           API_KEY: ${{ env.CI_TEST_API_KEY }}
@@ -156,7 +197,8 @@ jobs:
               if kill -0 "$PID" 2>/dev/null; then kill -9 "$PID" || true; fi
             fi
           done
-          if [ -f api.log ]; then echo "--- api.log ---"; tail -n 80 api.log; fi
+          if [ -f api.log ]; then tail -n 80 api.log; fi
+          if [ -f worker.log ]; then tail -n 80 worker.log; fi
 
   integration-e2e-staging:
     needs: [build, integration-e2e-local]
