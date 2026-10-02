@@ -3,14 +3,20 @@ import { z } from 'zod';
 import Fastify from 'fastify';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { isTenantArtifactKey, registerJobRoutes } from './jobs';
+import {
+  aggregateRequiredStepStatuses,
+  isTenantArtifactKey,
+  PRESET_IDS,
+  publicStepStatusFromQueueState,
+  registerJobRoutes,
+} from './jobs';
 import type { AuthenticatedRequest } from '../types';
 
 describe('Job Route Validation', () => {
   it('should validate job creation request', () => {
     const Body = z.object({
       source_url: z.string().url(),
-      preset_id: z.string().optional(),
+      preset_id: z.enum(PRESET_IDS).optional(),
     });
 
     const validBody = {
@@ -26,7 +32,7 @@ describe('Job Route Validation', () => {
   it('should reject invalid URL', () => {
     const Body = z.object({
       source_url: z.string().url(),
-      preset_id: z.string().optional(),
+      preset_id: z.enum(PRESET_IDS).optional(),
     });
 
     expect(() => {
@@ -37,11 +43,42 @@ describe('Job Route Validation', () => {
   it('should accept optional preset_id', () => {
     const Body = z.object({
       source_url: z.string().url(),
-      preset_id: z.string().optional(),
+      preset_id: z.enum(PRESET_IDS).optional(),
     });
 
     const result = Body.parse({ source_url: 'https://example.com/video.mp4' });
     expect(result.preset_id).toBeUndefined();
+  });
+
+  it('returns a clear 400 for an unsupported preset before queue access', async () => {
+    const app = Fastify();
+    app.addHook('preHandler', async (request) => {
+      (request as AuthenticatedRequest).tenantId = 'tenant-a';
+    });
+    registerJobRoutes(
+      app,
+      null,
+      null,
+      { labels: () => ({ set: () => undefined }) },
+      { labels: () => ({ inc: () => undefined }) },
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/jobs',
+      payload: {
+        source_url: 'https://example.com/video.mp4',
+        preset_id: 'definitely_unsupported',
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      success: false,
+      error: 'validation_error',
+      details: [{ message: expect.stringContaining('Supported presets:') }],
+    });
+    await app.close();
   });
 });
 
@@ -56,6 +93,31 @@ describe('Job Status Response', () => {
     expect(status.captions).toBe('completed');
     expect(status.ad).toBe('pending');
     expect(status.color).toBe('failed');
+  });
+
+  it('keeps delayed BullMQ retries non-terminal even when a prior attempt failed', () => {
+    expect(publicStepStatusFromQueueState('delayed')).toBe('pending');
+    expect(aggregateRequiredStepStatuses([
+      'completed',
+      'completed',
+      'completed',
+      publicStepStatusFromQueueState('delayed'),
+    ])).toBe('processing');
+  });
+
+  it('only completes when every required step succeeds', () => {
+    expect(aggregateRequiredStepStatuses([
+      'completed',
+      'completed',
+      'completed',
+      'completed',
+    ])).toBe('completed');
+    expect(aggregateRequiredStepStatuses([
+      'completed',
+      'completed',
+      'completed',
+      'failed',
+    ])).toBe('failed');
   });
 });
 

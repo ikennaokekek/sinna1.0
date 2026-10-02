@@ -1,0 +1,14 @@
+{
+  "environment": "UNVERIFIED",
+  "nonProductionOwnershipVerified": false,
+  "productionUsageExcluded": false,
+  "verifiedAt": null,
+  "bucketSha256": null,
+  "accountSha256": null,
+  "verification": null,
+  "stableEvidenceReferences": [],
+  "permissions": [],
+  "requiredEvidence": ["Account/bucket owner-issued verification", "Production resource inventory proving separation", "Scoped read/write/delete policy", "Evidence retention and private reviewer access policy"],
+  "referenceShape": { "path": "absolute private evidence/eic document path", "sha256": "exact SHA-256" },
+  "warning": "Template only. Never authorize a real run from names, credential presence or this unfilled template."
+}

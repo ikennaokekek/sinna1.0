@@ -8,18 +8,21 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
-  ListObjectsV2Command,
+  HeadBucketCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
-import { getDb, seedTenantAndApiKey } from '../apps/api/src/lib/db';
+import { getDb } from '../apps/api/src/lib/db';
+import { removeOwnedQueueJobStrict } from './lib/investorMvpCleanup';
 import {
-  removeQueueJobStrict,
-  removeTenantQueueState,
-} from './lib/investorMvpCleanup';
+  addEvidenceFile, addOwnedArtifact, archiveEvidence, assertIsolation, redact, requireRealArtifacts,
+  mayDeleteRunMedia, numericMeasurements, sha256, updateArchivedOutcome, writeEvidenceJournal, verifyStorageOwnership, type EvidenceRecord,
+} from './lib/eicValidation';
+import { EIC_PROTOCOL, protocolSha256, inspectCaptions } from './lib/eicProtocol';
+import { assertRuntimeProof } from './lib/eicRuntimeProof';
 
 type JobStatus = {
   success?: boolean;
@@ -40,6 +43,10 @@ type JobStatus = {
 const baseUrl = (process.env.MVP_BASE_URL || 'http://127.0.0.1:5000').replace(/\/$/, '');
 const GOLDEN_PRESETS = ['deaf', 'epilepsy_flash', 'epilepsy_noise'] as const;
 type GoldenPreset = typeof GOLDEN_PRESETS[number];
+let activeRecord: EvidenceRecord | undefined;
+const journalRoot = path.join(process.cwd(), 'evidence', 'eic');
+const checkpoint = () => activeRecord && writeEvidenceJournal(journalRoot, activeRecord);
+const attemptStartedAt = new Date().toISOString();
 const required = [
   'DATABASE_URL',
   'R2_ACCOUNT_ID',
@@ -125,6 +132,8 @@ function validateEngineeringEvidence(preset: GoldenPreset, evidence: any): void 
       || evidence.after?.windowDurationMs !== 100
       || evidence.before?.sampledAudioWindows !== evidence.after?.sampledAudioWindows
       || !Number.isFinite(evidence?.encodedTruePeakDbtp)
+      || evidence.encodedTruePeakCeilingDbtp !== -2
+      || !(evidence.before?.sampledAudioWindows > 0)
       || !(evidence.encodedTruePeakDbtp <= evidence.encodedTruePeakCeilingDbtp)
       || evidence.after?.truePeakDbtp !== evidence.encodedTruePeakDbtp
     ) {
@@ -171,73 +180,154 @@ function inspectPlayableEpilepsyNoiseOutput(outputPath: string): {
   return { durationSeconds, sampleRateHz, truePeakDbtp };
 }
 
-async function removeStaleDemoState(r2: S3Client, bucket: string): Promise<void> {
-  const stale = await getDb().pool.query<{ id: string }>(
-    `SELECT id FROM tenants WHERE name LIKE 'investor-mvp-%@example.invalid'`,
-  );
-  for (const { id } of stale.rows) {
-    await removeTenantQueueState({
-      tenantId: id,
-      redisUrl: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
-      prefix: process.env.QUEUE_PREFIX || 'sinna:mvp',
-    });
-    await deleteR2Prefix(r2, bucket, `artifacts/${id}/`);
+function inspectMedia(pathname: string): { durationSeconds: number; videoStreams: number; audioStreams: number } {
+  const probe = JSON.parse(execFileSync('ffprobe', [
+    '-v', 'error', '-show_entries', 'stream=codec_type', '-show_entries', 'format=duration',
+    '-of', 'json', pathname,
+  ], { encoding: 'utf8' }));
+  const result = {
+    durationSeconds: Number(probe.format?.duration),
+    videoStreams: (probe.streams || []).filter((s: { codec_type: string }) => s.codec_type === 'video').length,
+    audioStreams: (probe.streams || []).filter((s: { codec_type: string }) => s.codec_type === 'audio').length,
+  };
+  if (!(result.durationSeconds > 0) || !result.videoStreams || !result.audioStreams) {
+    throw new Error('media probe did not verify playable audio and video');
   }
-  for (const row of await getDb().pool.query<{ name: string }>(
-    `SELECT name FROM tenants WHERE name LIKE 'investor-mvp-%@example.invalid'`,
-  ).then((result) => result.rows)) {
-    const runId = row.name.slice('investor-mvp-'.length, -'@example.invalid'.length);
-    await r2.send(new DeleteObjectCommand({ Bucket: bucket, Key: `demo-inputs/${runId}.mp4` }));
-  }
-  if (stale.rowCount) {
-    await getDb().pool.query(
-      `DELETE FROM tenants WHERE name LIKE 'investor-mvp-%@example.invalid'`,
-    );
-    console.log(`Removed ${stale.rowCount} stale disposable demo tenant(s).`);
-  }
-}
-
-async function deleteR2Prefix(r2: S3Client, bucket: string, prefix: string): Promise<void> {
-  let continuationToken: string | undefined;
-  do {
-    const listed = await r2.send(new ListObjectsV2Command({
-      Bucket: bucket,
-      Prefix: prefix,
-      ContinuationToken: continuationToken,
-    }));
-    for (const object of listed.Contents || []) {
-      if (object.Key) {
-        await r2.send(new DeleteObjectCommand({ Bucket: bucket, Key: object.Key }));
-      }
-    }
-    continuationToken = listed.NextContinuationToken;
-  } while (continuationToken);
+  return result;
 }
 
 async function checkedJson(response: Response, operation: string): Promise<any> {
   const body = await response.json();
   if (!response.ok) {
-    throw new Error(`${operation} failed with HTTP ${response.status}: ${JSON.stringify(body)}`);
+    throw new Error(`${operation} failed with HTTP ${response.status}`);
   }
   return body;
 }
 
-async function main(): Promise<void> {
-  assertEnvironment();
-  const preset = selectedPreset();
+async function createRunTenant(name: string, keyHash: string): Promise<string> {
+  const client = await getDb().pool.connect();
+  try {
+    await client.query('BEGIN');
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO tenants(name, active, plan) VALUES ($1, true, 'standard') RETURNING id`,
+      [name],
+    );
+    const id = inserted.rows[0]?.id;
+    if (!id) throw new Error('run tenant was not inserted');
+    await client.query('INSERT INTO api_keys(key_hash, tenant_id) VALUES ($1, $2)', [keyHash, id]);
+    await client.query('COMMIT');
+    return id;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
-  const runId = crypto.randomUUID();
+async function main(): Promise<void> {
+  const preset = selectedPreset();
+  const runId = process.env.MVP_RUN_ID;
+  if (!runId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId)) {
+    throw new Error('MVP_RUN_ID must be an explicitly assigned fresh UUID');
+  }
+  if (!process.env.MVP_ISOLATION_MANIFEST) {
+    throw new Error('MVP_ISOLATION_MANIFEST is required before any resource access');
+  }
+  const isolation = assertIsolation(
+    process.env,
+    JSON.parse(await fs.readFile(process.env.MVP_ISOLATION_MANIFEST, 'utf8')),
+    runId,
+    process.cwd(),
+  );
+  // Refuse symlinked, missing or unwritable evidence destinations before
+  // accessing any configured DB, queue, object store or media provider.
+  if (await fs.realpath(isolation.evidenceDirectory) !== isolation.evidenceDirectory) {
+    throw new Error('evidence directory must not be a symlink');
+  }
+  const probePath = path.join(isolation.evidenceDirectory, `.write-probe-${runId}`);
+  await fs.writeFile(probePath, runId, { flag: 'wx', mode: 0o600 });
+  try {
+    if (await fs.readFile(probePath, 'utf8') !== runId) throw new Error('evidence read-back probe failed');
+  } finally {
+    await fs.unlink(probePath);
+  }
+  assertEnvironment();
+  const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const trackedDiff = execFileSync('git', ['diff', '--binary', 'HEAD'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  const changes = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], { encoding: 'utf8' });
+  if (changes.trim()) throw new Error('commit all validation code and inputs before execution so the tested revision is exact');
+  const runtime = await assertRuntimeProof(process.env, runId, revision, process.cwd());
+  const localIdentity = JSON.parse(execFileSync('node', ['scripts/eic-local-infra.mjs', 'status', runId], { encoding: 'utf8' }));
+  if (localIdentity.database !== isolation.databaseName
+    || new URL(process.env.DATABASE_URL!).port !== String(localIdentity.postgresPort)
+    || new URL(process.env.REDIS_URL!).port !== String(localIdentity.redisPort)) {
+    throw new Error('live disposable infrastructure identity mismatch');
+  }
+  // Ownership documentation must be independently supplied; no credential/name inference.
+  const ownership = await verifyStorageOwnership(process.env, process.env.MVP_STORAGE_OWNERSHIP_DOCUMENT, process.cwd());
+  const record: EvidenceRecord = {
+    runId, preset, startedAt: attemptStartedAt, revision,
+    changesSha256: sha256(trackedDiff + changes),
+    toolVersions: {
+      node: process.version,
+      ffmpeg: execFileSync('ffmpeg', ['-version'], { encoding: 'utf8' }).split('\n')[0],
+      ffprobe: execFileSync('ffprobe', ['-version'], { encoding: 'utf8' }).split('\n')[0],
+    },
+    configuration: {
+      database: 'verified disposable loopback database',
+      redis: 'verified disposable loopback Redis',
+      queuePrefix: isolation.queuePrefix,
+      storage: 'operator-verified non-production bucket',
+      evidence: 'operator-verified workspace archive',
+      input: process.env.MVP_INPUT_MANIFEST ? 'permissioned representative media' : 'synthetic FFmpeg fixture',
+      isolationManifestSha256: sha256(await fs.readFile(process.env.MVP_ISOLATION_MANIFEST)),
+      runtimeReceiptSha256: runtime.receiptSha256,
+      storageOwnershipDocumentSha256: ownership.sha256,
+    },
+    logs: [], files: {}, metrics: {}, outcome: 'running', cleanupFailures: [],
+    protocol: { version: EIC_PROTOCOL.version, sha256: protocolSha256 },
+    assertions: [], stepClassifications: { ad: EIC_PROTOCOL.disabledSteps.ad },
+  };
+  activeRecord = record; checkpoint();
   const apiKey = `sk_live_${crypto.randomBytes(16).toString('hex')}`;
   const apiKeyHash = crypto.createHash('sha256').update(apiKey).digest('hex');
-  const tenantName = `investor-mvp-${runId}@example.invalid`;
+  const otherApiKey = `sk_live_${crypto.randomBytes(16).toString('hex')}`;
+  const otherApiKeyHash = crypto.createHash('sha256').update(otherApiKey).digest('hex');
+  const tenantName = `investor-mvp-${runId}-a@example.invalid`;
+  const otherTenantName = `investor-mvp-${runId}-b@example.invalid`;
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sinna-investor-mvp-'));
+  record.recovery = { tempDir, tenantNames: [tenantName, otherTenantName] }; checkpoint();
   const inputPath = path.join(tempDir, 'input.mp4');
   const inputKey = `demo-inputs/${runId}.mp4`;
-  const artifactKeys = new Set<string>([inputKey]);
+  const artifactKeys = new Set<string>();
   let tenantId: string | undefined;
+  let otherTenantId: string | undefined;
+  let otherArtifactKey: string | undefined;
   let signedSourceUrl: string | undefined;
   let jobSteps: Record<string, string> = {};
   let smokePassed = false;
+  let submissionAttempted = false;
+  let knownJobId: string | undefined;
+  let preserveRemoteEvidence = false;
+  let inputUploadAttempted = false;
+  let inputUploadConfirmed = false;
+  let technicalFailure: string | undefined;
+  let archivedAt: string | undefined;
+  const interruption = new AbortController();
+  const interrupted = (signal: string) => {
+    record.outcome = 'interrupted'; record.technicalFailure = signal; checkpoint();
+    interruption.abort(new Error(signal));
+  };
+  const onSigint = () => interrupted('SIGINT');
+  const onSigterm = () => interrupted('SIGTERM');
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  const log = (event: string) => {
+    record.logs.push({ at: new Date().toISOString(), event: redact(event) });
+    checkpoint();
+    console.log(redact(event));
+  };
 
   const r2 = new S3Client({
     region: 'auto',
@@ -250,27 +340,77 @@ async function main(): Promise<void> {
   const bucket = process.env.R2_BUCKET!;
 
   try {
-    await removeStaleDemoState(r2, bucket);
-    generateRepresentativeInput(preset, inputPath);
+    const runtimeSnapshot = await fs.readFile(process.env.MVP_RUNTIME_RECEIPT!);
+    if (sha256(runtimeSnapshot) !== runtime.receiptSha256) throw new Error('runtime receipt changed during preflight');
+    await addEvidenceFile(tempDir, 'runtime-identity-receipt.json', runtimeSnapshot, record);
+    await addEvidenceFile(tempDir, 'validation-protocol.json', JSON.stringify(EIC_PROTOCOL, null, 2), record);
+    checkpoint();
+    // Read-only access proof before uploading anything or provisioning tenants.
+    await r2.send(new HeadBucketCommand({ Bucket: bucket }), { abortSignal: interruption.signal });
+    record.assertions!.push({ id: 'storage-read-access', status: 'PASSED' });
+    if (process.env.MVP_INPUT_MANIFEST) {
+      const manifest = JSON.parse(await fs.readFile(process.env.MVP_INPUT_MANIFEST, 'utf8'));
+      if (!manifest?.path || !/^[a-f0-9]{64}$/.test(manifest.sha256)
+        || typeof manifest.permissionEvidence !== 'string' || manifest.permissionEvidence.trim().length < 12) {
+        throw new Error('representative media requires a path, SHA-256 and permission evidence');
+      }
+      const source = path.resolve(manifest.path);
+      if (!source.startsWith(process.cwd() + path.sep)) throw new Error('representative media must be in the workspace');
+      const media = await fs.readFile(source);
+      if (sha256(media) !== manifest.sha256) throw new Error('representative input SHA-256 mismatch');
+      await fs.writeFile(inputPath, media);
+      record.configuration.inputManifestSha256 = sha256(JSON.stringify(manifest));
+      await addEvidenceFile(tempDir, 'input-permissions.json', JSON.stringify({
+        sha256: manifest.sha256, permissionEvidence: redact(manifest.permissionEvidence),
+        environmentCase: manifest.environmentCase || 'NOT_SUPPLIED',
+        expectedTranscript: manifest.expectedTranscript || 'NOT_SUPPLIED',
+      }, null, 2), record);
+      log('Permissioned representative input hash verified');
+    } else {
+      generateRepresentativeInput(preset, inputPath);
+      log('Synthetic input created');
+    }
 
     const input = await fs.readFile(inputPath);
+    await addEvidenceFile(tempDir, 'original-input.mp4', input, record);
+    record.metrics.inputMedia = inspectMedia(inputPath);
+    record.assertions!.push({ id: 'representative-environment', status:
+      process.env.MVP_INPUT_MANIFEST ? 'PENDING_INDEPENDENT_REVIEW' : 'NOT_ESTABLISHED_SYNTHETIC' });
+    checkpoint();
+    const alreadyOwned = await getDb().pool.query(
+      'SELECT id FROM tenants WHERE name = ANY($1::text[])',
+      [[tenantName, otherTenantName]],
+    );
+    if (alreadyOwned.rowCount) throw new Error('run ID already has tenants; refusing to reuse or delete them');
+    for (const file of [path.join(isolation.evidenceDirectory, runId), path.join(isolation.evidenceDirectory, `${runId}.partial`)]) {
+      try { await fs.stat(file); throw new Error('run ID already has archived evidence; refusing reuse'); }
+      catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+    }
+    interruption.signal.throwIfAborted();
+    inputUploadAttempted = true;
+    record.recovery = { ...record.recovery, intendedInputKey: inputKey }; checkpoint();
     await r2.send(new PutObjectCommand({
       Bucket: bucket,
       Key: inputKey,
       Body: input,
       ContentType: 'video/mp4',
+      IfNoneMatch: '*',
     }));
+    inputUploadConfirmed = true;
+    artifactKeys.add(inputKey);
+    record.recovery = { ...record.recovery, objectKeys: [...artifactKeys] }; checkpoint();
     signedSourceUrl = await getSignedUrl(
       r2,
       new GetObjectCommand({ Bucket: bucket, Key: inputKey }),
       { expiresIn: 900 },
     );
 
-    ({ tenantId } = await seedTenantAndApiKey({
-      tenantName,
-      plan: 'standard',
-      apiKeyHash,
-    }));
+    preserveRemoteEvidence = true; // Unknown transaction outcome must retain recovery state.
+    tenantId = await createRunTenant(tenantName, apiKeyHash);
+    record.recovery = { ...record.recovery, tenantId }; checkpoint();
+    otherTenantId = await createRunTenant(otherTenantName, otherApiKeyHash);
+    preserveRemoteEvidence = false;
+    record.recovery = { ...record.recovery, otherTenantId }; checkpoint();
     // Emulate the commercial state Onboarding would sync after successful
     // checkout. This is limited to the unique disposable development tenant.
     const provisioned = await getDb().pool.query(
@@ -283,13 +423,30 @@ async function main(): Promise<void> {
     if (provisioned.rowCount !== 1) {
       throw new Error('disposable tenant provisioning did not settle exactly once');
     }
+    const otherProvisioned = await getDb().pool.query(
+      `UPDATE tenants SET status = 'active', active = true, expires_at = now() + interval '1 day'
+       WHERE id = $1 AND name = $2 RETURNING id`,
+      [otherTenantId, otherTenantName],
+    );
+    if (otherProvisioned.rowCount !== 1 || otherTenantId === tenantId) {
+      throw new Error('second disposable tenant provisioning failed');
+    }
+    otherArtifactKey = `artifacts/${otherTenantId}/${runId}-isolation.txt`;
+    await r2.send(new PutObjectCommand({
+      Bucket: bucket, Key: otherArtifactKey, Body: `eic-isolation-${runId}`,
+      ContentType: 'text/plain', IfNoneMatch: '*',
+    }));
+    artifactKeys.add(otherArtifactKey);
 
-    const health = await fetch(`${baseUrl}/readiness`);
+    const health = await fetch(`${baseUrl}/readiness`, { signal: interruption.signal });
     const healthBody = await checkedJson(health, 'readiness');
     if (!healthBody?.ok || healthBody?.checks?.postgres !== 'up' || healthBody?.checks?.redis !== 'up') {
       throw new Error(`readiness did not report PostgreSQL and Redis up: ${JSON.stringify(healthBody)}`);
     }
 
+    submissionAttempted = true;
+    record.recovery = { ...record.recovery, submissionAttempted: true }; checkpoint();
+    const submittedAt = Date.now();
     const create = await fetch(`${baseUrl}/v1/jobs`, {
       method: 'POST',
       headers: {
@@ -301,42 +458,56 @@ async function main(): Promise<void> {
         preset_id: preset,
         language: 'en',
       }),
+      signal: interruption.signal,
     });
     const created = await checkedJson(create, 'authenticated job submission');
     const jobId = created?.data?.id as string | undefined;
     if (!jobId) throw new Error('job submission returned no id');
+    knownJobId = jobId;
     jobSteps = created?.data?.steps || {};
+    if (!['captions', 'ad', 'color', 'videoTransform'].every(name => typeof jobSteps[name] === 'string' && jobSteps[name].length > 0)) {
+      jobSteps = {}; throw new Error('incomplete submission IDs; retained potentially active flow for recovery');
+    }
+    record.recovery = { ...record.recovery, jobSteps }; checkpoint();
     if (tenantId) {
-      if (jobSteps.captions) artifactKeys.add(`artifacts/${tenantId}/${jobSteps.captions}.vtt`);
-      if (jobSteps.ad) artifactKeys.add(`artifacts/${tenantId}/${jobSteps.ad}.mp3`);
-      if (jobSteps.color) artifactKeys.add(`artifacts/${tenantId}/${jobSteps.color}.json`);
+      if (jobSteps.captions) addOwnedArtifact(artifactKeys, `artifacts/${tenantId}/${jobSteps.captions}.vtt`, tenantId);
+      if (jobSteps.ad) addOwnedArtifact(artifactKeys, `artifacts/${tenantId}/${jobSteps.ad}.mp3`, tenantId);
+      if (jobSteps.color) addOwnedArtifact(artifactKeys, `artifacts/${tenantId}/${jobSteps.color}.json`, tenantId);
       if (jobSteps.videoTransform) {
-        artifactKeys.add(`artifacts/${tenantId}/${jobSteps.videoTransform}-transformed.mp4`);
-        artifactKeys.add(`artifacts/${tenantId}/${jobSteps.videoTransform}-evidence.json`);
+        addOwnedArtifact(artifactKeys, `artifacts/${tenantId}/${jobSteps.videoTransform}-transformed.mp4`, tenantId);
+        addOwnedArtifact(artifactKeys, `artifacts/${tenantId}/${jobSteps.videoTransform}-evidence.json`, tenantId);
       }
     }
 
-    console.log('Authenticated submission accepted.');
-    console.log(`Job: ${jobId}`);
+    log('Authenticated submission accepted');
+    log(`Job: ${jobId}`);
 
-    const deadline = Date.now() + 240_000;
+    const deadline = submittedAt + EIC_PROTOCOL.timeoutMs;
     let completed: JobStatus | undefined;
     while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, 2_000);
+        interruption.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(interruption.signal.reason);
+        }, { once: true });
+      });
       const response = await fetch(`${baseUrl}/v1/jobs/${jobId}`, {
         headers: { 'x-api-key': apiKey },
+        signal: interruption.signal,
       });
       const status = await checkedJson(response, 'job status') as JobStatus;
       for (const step of Object.values(status.data?.steps || {})) {
-        if (step.artifactKey) artifactKeys.add(step.artifactKey);
+        addOwnedArtifact(artifactKeys, step.artifactKey, tenantId!);
+        addOwnedArtifact(artifactKeys, step.evidenceArtifactKey, tenantId!);
       }
       const summary = Object.entries(status.data?.steps || {})
         .map(([name, step]) => `${name}=${step.status || 'unknown'}`)
         .join(', ');
-      console.log(`Status: ${status.data?.status || 'unknown'} (${summary})`);
+      log(`Status: ${status.data?.status || 'unknown'} (${summary})`);
 
       if (status.data?.status === 'failed') {
-        throw new Error(`job failed: ${JSON.stringify(status.data.steps)}`);
+        throw new Error('required pipeline job failed; see recorded step statuses');
       }
       if (status.data?.status === 'completed') {
         completed = status;
@@ -345,9 +516,15 @@ async function main(): Promise<void> {
     }
     if (!completed) throw new Error('job did not complete within 240 seconds');
     for (const step of Object.values(completed.data?.steps || {})) {
-      if (step.artifactKey) artifactKeys.add(step.artifactKey);
+      addOwnedArtifact(artifactKeys, step.artifactKey, tenantId!);
+      addOwnedArtifact(artifactKeys, step.evidenceArtifactKey, tenantId!);
     }
 
+    requireRealArtifacts(completed.data?.steps, tenantId!, EIC_PROTOCOL.requiredRealArtifacts);
+    record.metrics.pipelineDurationMs = Date.now() - submittedAt;
+    if ((record.metrics.pipelineDurationMs as number) > EIC_PROTOCOL.timeoutMs) throw new Error('declared pipeline timeout exceeded');
+    record.assertions!.push({ id: 'required-real-artifacts', status: 'PASSED' },
+      { id: 'ad-real-output', status: 'NOT_APPLICABLE_DISABLED', detail: completed.data?.steps?.ad?.degraded ? 'degraded marker; not validated' : 'disabled AD; not validated' });
     const captions = completed.data?.steps?.captions;
     const transformed = completed.data?.steps?.videoTransform;
     for (const stepName of ['captions', 'ad', 'color', 'videoTransform']) {
@@ -368,8 +545,8 @@ async function main(): Promise<void> {
     }
 
     const [captionResponse, videoResponse] = await Promise.all([
-      fetch(captions.url),
-      fetch(transformed.url),
+      fetch(captions.url, { signal: interruption.signal }),
+      fetch(transformed.url, { signal: interruption.signal }),
     ]);
     if (!captionResponse.ok) throw new Error(`signed caption fetch failed: HTTP ${captionResponse.status}`);
     if (!videoResponse.ok) throw new Error(`signed video fetch failed: HTTP ${videoResponse.status}`);
@@ -377,12 +554,47 @@ async function main(): Promise<void> {
     const captionText = await captionResponse.text();
     const videoBytes = new Uint8Array(await videoResponse.arrayBuffer());
     const retrievedVideoPath = path.join(tempDir, 'retrieved-output.mp4');
+    await addEvidenceFile(tempDir, 'output-video.mp4', videoBytes, record);
     await fs.writeFile(retrievedVideoPath, videoBytes);
     if (!captionText.startsWith('WEBVTT') || captionText.length < 20) {
       throw new Error('retrieved caption artifact is not a non-empty WebVTT document');
     }
     if (videoBytes.length < 1_000) {
       throw new Error('retrieved transformed video artifact is unexpectedly small');
+    }
+    await addEvidenceFile(tempDir, 'output-captions.vtt', captionText, record);
+    if (!/\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->/.test(captionText)) {
+      throw new Error('caption file contains no timestamped cues');
+    }
+    record.metrics.outputMedia = inspectMedia(retrievedVideoPath);
+    record.metrics.captionCueCount = (captionText.match(/-->/g) || []).length;
+    record.metrics.captionInspection = inspectCaptions(captionText, (record.metrics.outputMedia as any).durationSeconds);
+    if (preset === 'deaf') {
+      record.assertions!.push({ id: 'caption-content-quality', status: 'PENDING_EXPERT_AGREEMENT' },
+        { id: 'visible-caption-overlay', status: 'PENDING_INDEPENDENT_INSPECTION' });
+      for (const [i, time] of [0.25, 0.5, 0.75].entries()) {
+        const framePath = path.join(tempDir, `frame-${i}.jpg`);
+        execFileSync('ffmpeg', ['-v', 'error', '-ss', String(time * (record.metrics.outputMedia as any).durationSeconds),
+          '-i', retrievedVideoPath, '-frames:v', '1', framePath]);
+        await addEvidenceFile(tempDir, `overlay-inspection-${i}.jpg`, await fs.readFile(framePath), record);
+      }
+    }
+    for (const [name, file] of [['color', 'output-color.json']] as const) {
+      const url = completed.data?.steps?.[name]?.url;
+      if (!url) throw new Error(`required ${name} signed artifact is missing`);
+      const response = await fetch(url, { signal: interruption.signal });
+      if (!response.ok) throw new Error(`required ${name} artifact download failed: HTTP ${response.status}`);
+      const data = new Uint8Array(await response.arrayBuffer());
+      if (data.length < 20) throw new Error(`required ${name} artifact is empty or stubbed`);
+      if (name === 'color') {
+        const colors = JSON.parse(Buffer.from(data).toString('utf8'));
+        if (!Array.isArray(colors.dominant_colors) || !colors.dominant_colors.length
+          || !colors.dominant_colors.every((color: any) => Array.isArray(color) && /^#[a-f0-9]{6}$/i.test(color[0])
+            && Number.isFinite(color[1]) && color[1] > 0)) throw new Error('color analysis is missing real nonempty color measurements');
+        record.metrics.colorAnalysis = { dominantColorCount: colors.dominant_colors.length,
+          contrastRatioStatus: 'NOT_VALIDATED; current worker value is provisional' };
+      }
+      await addEvidenceFile(tempDir, file, data, record);
     }
     if (preset !== 'deaf') {
       if (!transformed.evidenceUrl || !transformed.evidenceArtifactKey) {
@@ -391,11 +603,19 @@ async function main(): Promise<void> {
       if (!transformed.evidenceArtifactKey.startsWith(tenantPrefix)) {
         throw new Error('engineering evidence is outside the authenticated tenant namespace');
       }
-      const evidenceResponse = await fetch(transformed.evidenceUrl);
+      const evidenceResponse = await fetch(transformed.evidenceUrl, { signal: interruption.signal });
       if (!evidenceResponse.ok) {
         throw new Error(`signed evidence fetch failed: HTTP ${evidenceResponse.status}`);
       }
       const evidence = await evidenceResponse.json();
+      record.metrics.engineering = {
+        kind: evidence.kind,
+        before: numericMeasurements(evidence.before),
+        after: numericMeasurements(evidence.after),
+        encodedTruePeakDbtp: evidence.encodedTruePeakDbtp,
+        encodedTruePeakCeilingDbtp: evidence.encodedTruePeakCeilingDbtp,
+      };
+      await addEvidenceFile(tempDir, 'engineering-metrics.json', JSON.stringify(record.metrics.engineering, null, 2), record);
       validateEngineeringEvidence(preset, evidence);
       if (preset === 'epilepsy_noise') {
         const inspection = inspectPlayableEpilepsyNoiseOutput(retrievedVideoPath);
@@ -407,9 +627,10 @@ async function main(): Promise<void> {
             `retrieved encoded true peak failed independent verification: ${JSON.stringify(inspection)}`,
           );
         }
-        console.log(`epilepsy_noise downloaded output: ${JSON.stringify(inspection)}`);
+        log(`epilepsy_noise downloaded output: ${JSON.stringify(inspection)}`);
+        record.metrics.independentOutputAudio = inspection;
       }
-      console.log(`${preset} evidence: ${JSON.stringify(evidence)}`);
+      log(`${preset} before/after engineering proxy measurements verified`);
     }
 
     const ownSignResponse = await fetch(
@@ -421,33 +642,120 @@ async function main(): Promise<void> {
     }
     const crossTenantResponse = await fetch(
       `${baseUrl}/v1/files/sign?${new URLSearchParams({
-        id: 'artifacts/another-tenant/private.vtt',
+        id: captions.artifactKey,
         ttl: '60',
       })}`,
-      { headers: { 'x-api-key': apiKey } },
+      { headers: { 'x-api-key': otherApiKey }, signal: interruption.signal },
     );
     if (crossTenantResponse.status !== 404) {
-      throw new Error(`cross-tenant signing was not denied: HTTP ${crossTenantResponse.status}`);
+      throw new Error(`second tenant could sign first tenant artifact: HTTP ${crossTenantResponse.status}`);
     }
-
-    console.log('Signed caption artifact retrieved and verified as WebVTT.');
-    console.log(`Signed transformed video retrieved (${videoBytes.length} bytes).`);
-    console.log('Alternate signing endpoint allowed own-tenant and denied cross-tenant keys.');
+    const reverseSign = await fetch(
+      `${baseUrl}/v1/files/sign?${new URLSearchParams({ id: otherArtifactKey!, ttl: '60' })}`,
+      { headers: { 'x-api-key': apiKey }, signal: interruption.signal },
+    );
+    if (reverseSign.status !== 404) throw new Error('first tenant could sign second tenant artifact');
+    const ownOther = await fetch(
+      `${baseUrl}/v1/files/sign?${new URLSearchParams({ id: otherArtifactKey!, ttl: '60' })}`,
+      { headers: { 'x-api-key': otherApiKey }, signal: interruption.signal },
+    );
+    const otherSigned = await checkedJson(ownOther, 'second tenant own-artifact signing');
+    if (!otherSigned?.data?.url) throw new Error('second tenant own-artifact signed URL missing');
+    const probe = await fetch(otherSigned.data.url, { signal: interruption.signal });
+    if (!probe.ok || await probe.text() !== `eic-isolation-${runId}`) {
+      throw new Error('second tenant own-artifact retrieval failed');
+    }
+    const otherJob = await fetch(`${baseUrl}/v1/jobs/${jobId}`, {
+      headers: { 'x-api-key': otherApiKey }, signal: interruption.signal,
+    });
+    if (otherJob.status !== 404) throw new Error('second tenant could read first tenant job');
+    log('Two provisioned tenants: own artifacts readable, both cross-tenant artifact directions and job lookup denied');
+    record.assertions!.push({ id: 'tenant-artifact-isolation', status: 'PASSED' });
+    log('Signed caption artifact retrieved and verified as WebVTT');
+    log(`Signed transformed video retrieved (${videoBytes.length} bytes)`);
+    log('Alternate signing endpoint allowed own-tenant and denied cross-tenant keys');
     smokePassed = true;
+  } catch (error) {
+    technicalFailure = redact(error instanceof Error ? error.message : error);
+    if (inputUploadAttempted && !inputUploadConfirmed) preserveRemoteEvidence = true;
+    log(`Technical failure: ${technicalFailure}`);
   } finally {
+    // Retain available outputs even when the engineering checks fail or a signal
+    // interrupts the attempt. These are read-only preservation requests, bounded
+    // independently from the cancelled validation requests.
+    if (knownJobId && tenantId) {
+      try {
+        const response = await fetch(`${baseUrl}/v1/jobs/${knownJobId}`, {
+          headers: { 'x-api-key': apiKey }, signal: AbortSignal.timeout(10_000),
+        });
+        const finalStatus = await checkedJson(response, 'evidence status capture') as JobStatus;
+        record.metrics.finalStepStatuses = Object.fromEntries(Object.entries(finalStatus.data?.steps || {})
+          .map(([name, step]) => [name, { status: step.status || 'missing', degraded: step.degraded ?? 'unknown',
+            artifactKey: step.artifactKey || null, evidenceArtifactKey: step.evidenceArtifactKey || null }]));
+        for (const [name, step] of Object.entries(finalStatus.data?.steps || {})) {
+          if (!/^[a-zA-Z]+$/.test(name)) throw new Error('unexpected step identity');
+          for (const [kind, url, key] of [['output', step.url, step.artifactKey],
+            ['metrics', step.evidenceUrl, step.evidenceArtifactKey]] as const) {
+            if (!key) continue;
+            addOwnedArtifact(artifactKeys, key, tenantId);
+            if (!url) throw new Error('existing artifact has no retrievable evidence URL');
+            const download = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+            if (!download.ok || !download.body) throw new Error('available output evidence download failed');
+            const chunks: Uint8Array[] = []; let size = 0;
+            for await (const chunk of download.body as any) {
+              size += chunk.length;
+              if (size > 128 * 1024 * 1024) throw new Error('evidence artifact exceeds 128 MiB retention bound');
+              chunks.push(chunk);
+            }
+            const suffix = kind === 'metrics' ? 'json' : name === 'captions' ? 'vtt' : name === 'ad' ? 'mp3' : name === 'color' ? 'json' : 'mp4';
+            await addEvidenceFile(tempDir, `captured-${name.toLowerCase()}-${kind}.${suffix}`, Buffer.concat(chunks), record);
+          }
+        }
+      } catch (error) {
+        preserveRemoteEvidence = true;
+        record.assertions!.push({ id: 'failed-attempt-output-preservation', status: 'BLOCKED',
+          detail: redact(error instanceof Error ? error.message : error) });
+        technicalFailure ||= 'available output preservation incomplete; remote evidence retained';
+      }
+    }
+    record.recovery = { ...record.recovery, objectKeys: [...artifactKeys], preserveRemoteEvidence };
+    record.finishedAt = new Date().toISOString();
+    record.outcome = interruption.signal.aborted ? 'interrupted' : smokePassed ? 'passed' : 'failed';
+    if (technicalFailure) record.technicalFailure = technicalFailure;
+    // The journal is retained in tempDir even when the archive cannot be written.
+    await fs.writeFile(path.join(tempDir, 'recovery-manifest.json'), JSON.stringify(record, null, 2), { mode: 0o600 });
+    try {
+      archivedAt = await archiveEvidence(tempDir, isolation.evidenceDirectory, record);
+      log('Archive copied and read-back SHA-256 verified before cleanup');
+    } catch (error) {
+      const reason = redact(error instanceof Error ? error.message : error);
+      console.error(`Evidence archive failed; keeping temporary and remote data for recovery at ${tempDir}: ${reason}`);
+      technicalFailure ||= `evidence preservation blocked: ${reason}`;
+      record.technicalFailure = technicalFailure;
+      record.outcome = 'blocked';
+      await fs.writeFile(path.join(tempDir, 'recovery-manifest.json'), JSON.stringify(record, null, 2), { mode: 0o600 });
+    }
     const cleanupFailures: string[] = [];
     const cleanup = async (label: string, operation: () => Promise<unknown>): Promise<boolean> => {
       try {
         await operation();
         return true;
       } catch (error) {
-        cleanupFailures.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+        cleanupFailures.push(`${label}: ${redact(error instanceof Error ? error.message : error)}`);
         return false;
       }
     };
 
     let queueStateRemoved = true;
-    if (Object.keys(jobSteps).length > 0) {
+    if (preserveRemoteEvidence) {
+      queueStateRemoved = false;
+      cleanupFailures.push('output preservation incomplete or upload uncertain; remote state retained');
+    }
+    if (submissionAttempted && Object.keys(jobSteps).length === 0) {
+      queueStateRemoved = false;
+      cleanupFailures.push('submission response was uncertain; retained source, tenants and possible queue work');
+    }
+    if (archivedAt && !preserveRemoteEvidence && Object.keys(jobSteps).length > 0) {
       const redis = new IORedis(process.env.REDIS_URL || 'redis://127.0.0.1:6379', {
         maxRetriesPerRequest: null,
       });
@@ -462,7 +770,7 @@ async function main(): Promise<void> {
         const id = jobSteps[name];
         if (id) {
           queueStateRemoved =
-            (await cleanup(`remove ${name} job`, () => removeQueueJobStrict(queues[name], id)))
+            (await cleanup(`remove ${name} job`, () => removeOwnedQueueJobStrict(queues[name], id, tenantId!)))
             && queueStateRemoved;
         }
       }
@@ -475,45 +783,63 @@ async function main(): Promise<void> {
           && queueStateRemoved;
       }
       for (const queue of Object.values(queues)) {
-        await cleanup('close cleanup queue', () => queue.close());
+        queueStateRemoved = (await cleanup('close cleanup queue', () => queue.close())) && queueStateRemoved;
       }
-      await cleanup('close cleanup Redis connection', async () => redis.quit());
+      queueStateRemoved = (await cleanup('close cleanup Redis connection', async () => redis.quit())) && queueStateRemoved;
     }
 
     let r2StateRemoved = true;
-    if (queueStateRemoved) {
+    if (mayDeleteRunMedia(!!archivedAt, submissionAttempted, Object.keys(jobSteps).length > 0, queueStateRemoved)) {
       for (const key of artifactKeys) {
         r2StateRemoved =
           (await cleanup(`delete R2 object ${key}`, () =>
             r2.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }))))
           && r2StateRemoved;
       }
-      if (tenantId) {
-        r2StateRemoved =
-          (await cleanup('delete tenant R2 prefix', () =>
-            deleteR2Prefix(r2, bucket, `artifacts/${tenantId}/`)))
-          && r2StateRemoved;
+    } else if (archivedAt) {
+      cleanupFailures.push('queue state remains or submission uncertain; retained R2 source and tenants for manual recovery');
+    }
+    if (archivedAt && queueStateRemoved && r2StateRemoved) {
+      for (const [id, name] of [[tenantId, tenantName], [otherTenantId, otherTenantName]] as const) {
+        if (!id) continue;
+        await cleanup(`delete current-run tenant ${name}`, async () => {
+          const deleted = await getDb().pool.query(
+            'DELETE FROM tenants WHERE id = $1 AND name = $2',
+            [id, name],
+          );
+          if (deleted.rowCount !== 1) throw new Error(`expected one row, deleted ${deleted.rowCount}`);
+        });
       }
-    } else {
-      cleanupFailures.push('queue state remains; retained R2 source and tenant for a later recovery sweep');
     }
-    if (tenantId && queueStateRemoved && r2StateRemoved) {
-      await cleanup('delete disposable tenant', async () => {
-        const deleted = await getDb().pool.query(
-          'DELETE FROM tenants WHERE id = $1 AND name = $2',
-          [tenantId, tenantName],
-        );
-        if (deleted.rowCount !== 1) throw new Error(`expected one row, deleted ${deleted.rowCount}`);
-      });
-    } else if (!tenantId) {
-      await cleanup('delete disposable API key', () =>
-        getDb().pool.query('DELETE FROM api_keys WHERE key_hash = $1', [apiKeyHash]));
-    }
-    await cleanup('delete temporary files', () => fs.rm(tempDir, { recursive: true, force: true }));
     await cleanup('close smoke database pool', () => getDb().pool.end());
-    if (cleanupFailures.length > 0) {
-      throw new Error(`smoke cleanup failed: ${cleanupFailures.join('; ')}`);
+    record.cleanupFailures = cleanupFailures;
+    record.recovery = { ...record.recovery, temporaryMediaRetained: true };
+    checkpoint();
+    if (interruption.signal.aborted) record.outcome = 'interrupted';
+    else if (cleanupFailures.length > 0) record.outcome = 'failed';
+    if (archivedAt) {
+      try {
+        await updateArchivedOutcome(archivedAt, record);
+      } catch (error) {
+        technicalFailure ||= `final evidence update blocked: ${redact(error instanceof Error ? error.message : error)}`;
+        record.technicalFailure = technicalFailure;
+        record.outcome = 'blocked';
+        await fs.writeFile(path.join(tempDir, 'recovery-manifest.json'), JSON.stringify(record, null, 2), { mode: 0o600 });
+      }
     }
+    // Keep the local recovery copy even on success. It also protects a final
+    // manifest write failure; verified archives are the durable reviewer copy.
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+    checkpoint();
+  }
+  if (technicalFailure || record.cleanupFailures.length || !archivedAt || interruption.signal.aborted) {
+    throw new Error(JSON.stringify({
+      technicalFailure: technicalFailure || null,
+      cleanupFailures: record.cleanupFailures,
+      archive: archivedAt ? 'verified' : 'failed; temporary and remote data retained',
+      interrupted: interruption.signal.aborted,
+    }));
   }
   if (smokePassed) {
     console.log(`Investor MVP ${preset} golden path passed with disposable state cleaned.`);
@@ -521,6 +847,27 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  const failure = redact(error instanceof Error ? error.message : error);
+  if (!activeRecord) {
+    const suppliedId = process.env.MVP_RUN_ID;
+    activeRecord = {
+      runId: suppliedId && /^[0-9a-f-]{36}$/i.test(suppliedId) ? suppliedId : crypto.randomUUID(),
+      preset: process.argv[2] || 'deaf', revision: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      changesSha256: sha256(execFileSync('git', ['diff', 'HEAD'], { encoding: 'utf8' })
+        + execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], { encoding: 'utf8' })),
+      startedAt: attemptStartedAt, finishedAt: new Date().toISOString(),
+      toolVersions: { node: process.version }, configuration: { resourceAccess: 'preflight blocked; no media or cleanup' },
+      logs: [{ at: new Date().toISOString(), event: failure }], files: {}, metrics: {}, outcome: 'blocked',
+      cleanupFailures: [], technicalFailure: failure, protocol: { version: EIC_PROTOCOL.version, sha256: protocolSha256 },
+      assertions: [{ id: 'preflight', status: 'BLOCKED', detail: failure }],
+    };
+  } else {
+    activeRecord.finishedAt ||= new Date().toISOString();
+    activeRecord.technicalFailure ||= failure;
+    if (activeRecord.outcome === 'running') activeRecord.outcome = 'failed';
+  }
+  try { console.error(`Evidence journal retained: ${checkpoint()}`); }
+  catch { console.error('Evidence journal unavailable; no cleanup authorized; retain all recovery state'); }
+  console.error(failure);
   process.exit(1);
 });
