@@ -1173,7 +1173,11 @@ async function start() {
     
     // Log startup attempt
     app.log.info({ port, host: '0.0.0.0' }, '🚀 Starting API server...');
-    await app.listen({ port, host: process.env.EIC_RUN_ID && process.env.NODE_ENV !== 'production' ? '127.0.0.1' : '0.0.0.0' });
+    if (process.env.NODE_ENV !== 'production' && process.env.EIC_RUN_ID) {
+      await app.listen({ port, host: '127.0.0.1' });
+    } else {
+      await app.listen({ port, host: '0.0.0.0' });
+    }
     app.log.info({ port }, '✅ API server is running and listening');
     console.log(`✅ API server is running on http://0.0.0.0:${port}`);
   } catch (err) {
