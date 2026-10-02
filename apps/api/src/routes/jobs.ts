@@ -46,6 +46,42 @@ const BUILTIN_PRESETS: Record<string, PresetConfig> = {
   cognitive_load: { subtitleFormats: ['vtt','srt','ttml'], captionStyle: 'simplified', adEnabled: true, speed: 0.95, colorProfile: 'standard', motionReduce: true, strobeReduce: true, videoTransform: true, videoTransformConfig: { simplifiedText: true, focusHighlight: true } },
 };
 
+export const PRESET_IDS = [
+  'everyday', 'adhd', 'autism', 'low_vision', 'color', 'hoh', 'cognitive',
+  'motion', 'blindness', 'deaf', 'color_blindness', 'epilepsy_flash',
+  'epilepsy_noise', 'cognitive_load',
+] as const;
+
+type PublicStepStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
+export function publicStepStatusFromQueueState(state: string): PublicStepStatus {
+  if (state === 'completed') return 'completed';
+  if (state === 'failed') return 'failed';
+  if (state === 'active') return 'processing';
+  return 'pending';
+}
+
+export function aggregateRequiredStepStatuses(
+  stepStatuses: PublicStepStatus[],
+): JobStatusResponse['status'] {
+  if (stepStatuses.length > 0 && stepStatuses.every((status) => status === 'completed')) {
+    return 'completed';
+  }
+  if (stepStatuses.some((status) => status === 'failed')) {
+    return 'failed';
+  }
+  if (stepStatuses.some((status) => status === 'processing' || status === 'completed')) {
+    return 'processing';
+  }
+  return 'pending';
+}
+
+const JobCreateBodySchema = z.object({
+  source_url: z.string().url(),
+  preset_id: z.enum(PRESET_IDS).optional(),
+  language: z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/).optional(),
+});
+
 export function registerJobRoutes(
   app: FastifyInstance,
   queues: Queues | null,
@@ -55,6 +91,7 @@ export function registerJobRoutes(
 ): void {
   // POST /v1/jobs: validate, idempotency, enqueue pipeline
   app.post('/v1/jobs', {
+    attachValidation: true,
     schema: {
       description: 'Create a processing job',
       tags: ['Jobs'],
@@ -70,7 +107,7 @@ export function registerJobRoutes(
           },
           preset_id: {
             type: 'string',
-            enum: ['everyday', 'adhd', 'autism', 'low_vision', 'color', 'hoh', 'cognitive', 'motion', 'blindness', 'deaf', 'color_blindness', 'epilepsy_flash', 'epilepsy_noise', 'cognitive_load'],
+            enum: [...PRESET_IDS],
             description: 'Optional preset to influence processing behaviour. Supports video transformation for accessibility needs.'
           },
           language: {
@@ -131,6 +168,24 @@ export function registerJobRoutes(
     }
   }, async (req: FastifyRequest, res: FastifyReply) => {
     const perfId = performanceMonitor.start('create_job', (req as AuthenticatedRequest).requestId);
+    const validationError = (req as FastifyRequest & {
+      validationError?: Error & { validation?: Array<{ keyword?: string; instancePath?: string }> };
+    }).validationError;
+    if (validationError) {
+      performanceMonitor.end(perfId);
+      const invalidPreset = validationError.validation?.some(
+        (issue: { keyword?: string; instancePath?: string }) =>
+          issue.keyword === 'enum' && issue.instancePath === '/preset_id',
+      );
+      const message = invalidPreset
+        ? `Unsupported preset_id. Supported presets: ${PRESET_IDS.join(', ')}`
+        : validationError.message;
+      return res.code(400).send({
+        success: false,
+        error: ErrorCodes.VALIDATION_ERROR,
+        details: [{ message }],
+      });
+    }
     if (!queues || !redis) {
       performanceMonitor.end(perfId);
       return res.code(503).send({
@@ -141,12 +196,7 @@ export function registerJobRoutes(
     }
     
     try {
-      const Body = z.object({
-        source_url: z.string().url(),
-        preset_id: z.string().optional(),
-        language: z.string().regex(/^[a-z]{2}(-[A-Z]{2})?$/).optional(),
-      });
-      const body = Body.parse(req.body);
+      const body = JobCreateBodySchema.parse(req.body);
       const tenantId = (req as AuthenticatedRequest).tenantId;
       
       if (!tenantId) {
@@ -256,7 +306,14 @@ export function registerJobRoutes(
         presets = BUILTIN_PRESETS;
       }
       
-      const presetCfg = presets[preset] || presets['everyday'] || { subtitleFormats: ['vtt', 'srt', 'ttml'] };
+      const presetCfg = presets[preset] || BUILTIN_PRESETS[preset];
+      if (!presetCfg) {
+        return res.code(400).send({
+          success: false,
+          error: ErrorCodes.VALIDATION_ERROR,
+          details: [{ message: `Unsupported preset_id. Supported presets: ${PRESET_IDS.join(', ')}` }],
+        });
+      }
       const captionFormat = 'vtt';
 
       // Log language resolution for debugging
@@ -573,36 +630,47 @@ export function registerJobRoutes(
         return res.code(404).send({ success: false, error: ErrorCodes.NOT_FOUND });
       }
 
-      // Check job completion status (await promises)
-      const cCompleted = c ? await c.isCompleted() : false;
-      const cFailed = c ? !!c.failedReason : false;
-      const aCompleted = a ? await a.isCompleted() : false;
-      const aFailed = a ? !!a.failedReason : false;
-      const clCompleted = cl ? await cl.isCompleted() : false;
-      const clFailed = cl ? !!cl.failedReason : false;
-      const vtCompleted = vt ? await vt.isCompleted() : false;
-      const vtFailed = vt ? !!vt.failedReason : false;
+      // BullMQ retains failedReason while retrying. Use the actual queue state so
+      // delayed retries remain non-terminal and only exhausted jobs are failed.
+      const [cState, aState, clState, vtState] = await Promise.all([
+        c ? c.getState() : Promise.resolve('unknown'),
+        a ? a.getState() : Promise.resolve('unknown'),
+        cl ? cl.getState() : Promise.resolve('unknown'),
+        vt ? vt.getState() : Promise.resolve('unknown'),
+      ]);
+      const cStatus = publicStepStatusFromQueueState(cState);
+      const aStatus = publicStepStatusFromQueueState(aState);
+      const clStatus = publicStepStatusFromQueueState(clState);
+      const vtStatus = publicStepStatusFromQueueState(vtState);
+      const cCompleted = cStatus === 'completed';
+      const cFailed = cStatus === 'failed';
+      const aCompleted = aStatus === 'completed';
+      const aFailed = aStatus === 'failed';
+      const clCompleted = clStatus === 'completed';
+      const clFailed = clStatus === 'failed';
+      const vtCompleted = vtStatus === 'completed';
+      const vtFailed = vtStatus === 'failed';
 
       const status: JobStatusResponse['steps'] = {
         captions: {
-          status: cCompleted ? 'completed' : cFailed ? 'failed' : 'pending',
+          status: cStatus,
           artifactKey: cCompleted && c ? (c.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
           degraded: cCompleted && c ? !!(c.returnvalue as { degraded?: boolean })?.degraded : undefined,
           failedReason: cFailed && c ? c.failedReason : undefined,
         },
         ad: {
-          status: aCompleted ? 'completed' : aFailed ? 'failed' : 'pending',
+          status: aStatus,
           artifactKey: aCompleted && a ? (a.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
           degraded: aCompleted && a ? !!(a.returnvalue as { degraded?: boolean })?.degraded : undefined,
         },
         color: {
-          status: clCompleted ? 'completed' : clFailed ? 'failed' : 'pending',
+          status: clStatus,
           artifactKey: clCompleted && cl ? (cl.returnvalue as { artifactKey?: string })?.artifactKey : undefined,
           degraded: clCompleted && cl ? !!(cl.returnvalue as { degraded?: boolean })?.degraded : undefined,
         },
         ...(vt ? {
           videoTransform: {
-            status: vtCompleted ? 'completed' : vtFailed ? 'failed' : 'pending',
+            status: vtStatus,
             artifactKey: vtCompleted ? (vt.returnvalue as any)?.artifactKey : undefined,
             evidenceArtifactKey: vtCompleted ? (vt.returnvalue as any)?.evidenceArtifactKey : undefined,
             cloudinaryUrl: vtCompleted ? (vt.returnvalue as any)?.cloudinaryUrl : undefined,
@@ -611,25 +679,15 @@ export function registerJobRoutes(
         } : {}),
       };
 
-      // Determine overall status — partial success is still 'completed'
+      // Every queued step is required for this preset. Partial success must
+      // remain non-successful, and exhausted required failures fail the bundle.
       const stepStatuses = [
         status.captions?.status,
         status.ad?.status,
         status.color?.status,
         status.videoTransform?.status,
-      ].filter(Boolean) as string[];
-      const allCompleted = stepStatuses.every(s => s === 'completed');
-      const anyCompleted = stepStatuses.some(s => s === 'completed');
-      const allFailed = stepStatuses.every(s => s === 'failed');
-      const anyPending = stepStatuses.some(s => s === 'pending');
-      const anyProcessing = stepStatuses.some(s => s === 'processing');
-
-      const overallStatus: JobStatusResponse['status'] =
-        allCompleted ? 'completed'
-        : allFailed ? 'failed'
-        : anyCompleted && !anyPending && !anyProcessing ? 'completed' // partial: some completed, some failed
-        : anyProcessing || anyCompleted ? 'processing'
-        : 'pending';
+      ].filter(Boolean) as PublicStepStatus[];
+      const overallStatus = aggregateRequiredStepStatuses(stepStatuses);
 
       // metrics
       if (cFailed || aFailed || clFailed || vtFailed) {

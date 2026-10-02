@@ -133,3 +133,8 @@ Dockerfile*
 .sinna-local-api.pid
 .sinna-local-api.log
 .qpanda/
+
+# Local EIC media validation archives (may contain permissioned media)
+/evidence/eic/
+/evidence/eic-local/
+/.local/eic-infra/

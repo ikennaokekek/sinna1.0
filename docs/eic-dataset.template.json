@@ -1,0 +1,10 @@
+{
+  "protocol": "SINNA-EIC-1/1.0.0",
+  "status": "UNAVAILABLE_NOT_TESTED",
+  "cases": [
+    { "id": "representative-dialogue", "preset": "deaf", "status": "UNAVAILABLE_NOT_TESTED", "path": null, "sha256": null, "permissionEvidence": null, "expectedTranscript": null, "environmentCase": "Licensed streaming dialogue with caption offsets and client/assistive-technology conditions" },
+    { "id": "representative-flash", "preset": "epilepsy_flash", "status": "UNAVAILABLE_NOT_TESTED", "path": null, "sha256": null, "permissionEvidence": null, "environmentCase": "Permissioned known transitions with realistic stream encoding; proxy-only measurement" },
+    { "id": "representative-noise", "preset": "epilepsy_noise", "status": "UNAVAILABLE_NOT_TESTED", "path": null, "sha256": null, "permissionEvidence": null, "environmentCase": "Licensed dialogue with abrupt peaks and dynamic range under realistic streaming conditions" }
+  ],
+  "requiredPrivateMetadata": ["rights-document path and hash", "owner-confirmed processing/derived-output/reviewer/retention scope", "media characteristics", "language and ground truth", "stream protocol/segments/discontinuities", "network/client/load conditions", "reviewer-approved acceptance"]
+}

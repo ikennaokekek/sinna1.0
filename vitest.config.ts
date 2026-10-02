@@ -19,6 +19,9 @@ export default defineConfig({
       'tests/**/*.heal.ts',
       // Opt-in: RUN_REMOTE_DIAGNOSTIC=1 pnpm exec vitest run tests/fullIntegration.test.ts
       'tests/fullIntegration.test.ts',
+      // Explicit safe native-resource check; not a mock/golden pass.
+      // Run via: vitest run --config vitest.eic-local.config.ts
+      'tests/eicLocalInfra.test.ts',
     ],
     environment: 'node',
     testTimeout: 120000,

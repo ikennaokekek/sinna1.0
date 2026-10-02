@@ -19,5 +19,6 @@ describe('investor MVP queue cleanup', () => {
     };
 
     await expect(removeQueueJobStrict(queue as any, 'gone-job')).resolves.toBeUndefined();
+    expect(queue.remove).toHaveBeenCalledWith('gone-job', { removeChildren: false });
   });
 });
